@@ -1,4 +1,4 @@
-# Handoff: pydantic-ai-scriptmode (committed and reviewed; next is the real-model trial)
+# Handoff: pydantic-ai-scriptmode (reviewed and trialled on a real model; next is the backlog)
 
 Date: 2026-09-03
 Workspace: `/Users/hungng/Documents/AI/experiments/pydantic-experiments/`
@@ -8,10 +8,12 @@ session; do not write handoff copies elsewhere (no temp-directory copies, no pro
 
 ## Where things stand
 
-The package is complete, reviewed, committed, and pushed. `make all` (ruff format, ruff check,
-pyright strict, pytest) is green: 145 passed, no xfails, no skips. `git log` on `main`, newest
-first (handoff-only commits omitted):
+The package is complete, reviewed, trialled against a real model, committed, and pushed. `make all`
+(ruff format, ruff check, pyright strict, pytest) is green: 145 passed, no xfails, no skips.
+`git log` on `main`, newest first (handoff-only commits omitted):
 
+- `79468b8` Tune the run_script description from the first trial; total calls 500
+- `35cbdd9` Tutor example and first real-model run; teach fan-out bound sizing
 - `84047d8` Validator refuses a hand-built fan-out with no bound
 - `69963e5` Unresolved approval inside a script is a UserError; dispatch is a class
 - `d52d178` Fan-out waits for every item; skip is per item; no function-valued steps
@@ -22,11 +24,15 @@ Remote: `origin` is the private repo `https://github.com/hung-ngm/pydantic-ai-sc
 `main` tracks `origin/main` and is in sync. Working tree clean. Commit straight to `main` and push
 after each commit; no force-push, no other branches yet.
 
-The one open item is step 3, the real-model trial, blocked only on a provider key: none of the
-usual `*_API_KEY` variables was set in the last session's environment.
+Steps 1 to 4 are done. What remains is the deferred backlog (step 5), each item an ADR first.
 
 Session history, newest first:
 
+- 2026-09-03 (later): step 3 done. Built `examples/tutor.py`, ran it five times against
+  `anthropic:claude-opus-5` with the key from `.env` (git-ignored, standard workspace key; an
+  identity-linked key needs an `anthropic-workspace-id` header the SDK does not add, which cost
+  one detour). Tuned the description and one default from what the model got wrong. See "Trial
+  findings" below.
 - 2026-09-03: steps 1, 2, and 4 done, repo pushed. First commit, then a whole-package review. The
   `code-review` skill's multi-agent run hit the session rate limit mid-verification, so its merged
   candidate list was verified by hand in-line; every confirmed finding is a commit above. Wrote
@@ -66,8 +72,13 @@ what it owns.
 
 Public surface is `pydantic_ai_scriptmode/__init__.py` (`__all__`).
 
-`.local/` is git-ignored scratch: `trial.py` for step 3, plus the scheduler answer key and a swap
-helper from the learning phase, both redundant now and safe to delete.
+`examples/tutor.py` is the runnable example and the trial harness: four tools, three tasks, one
+`run_script` call each; `uv run python examples/tutor.py [task ...]`. It needs the `examples`
+dependency group (`uv sync --all-groups`; a single `--group` drops the others) and
+`ANTHROPIC_API_KEY` in `.env`.
+
+`.local/` is git-ignored scratch: `tutor-run-1.txt` to `tutor-run-5.txt` are the trial transcripts;
+the scheduler answer key and swap helper from the learning phase are redundant and safe to delete.
 
 ## Decisions made while coding (not in the ADRs or README)
 
@@ -144,69 +155,60 @@ Known and accepted:
 
 ## Next session: start here
 
-1. `cd pydantic-ai-scriptmode && git pull && make all`. Expect 145 passed.
-2. Check for a key: `env | grep -c API_KEY`. If zero, ask the user which provider to use and to
-   export the key in the shell (`! export ...` in the prompt), then continue with step 3. If the
-   user has no key to hand, skip to step 5 and come back.
-3. Do step 3 below end to end, including the doc write-back, before touching anything else. It is
-   the only source of evidence about what the model actually gets wrong; every later change to the
-   description or teaching copy should cite it.
+1. `cd pydantic-ai-scriptmode && git pull && uv sync --all-groups && make all`. Expect 145 passed.
+2. Ask the user which backlog item to take (step 5 below; the order is a recommendation). Write
+   the ADR first and get a yes before code.
+3. Any change to the description, the teaching copy, or `Limits` must be checked with
+   `uv run python examples/tutor.py` (needs `ANTHROPIC_API_KEY` in `.env`): all three tasks
+   should succeed in one turn with zero retries, as they do now. Compare against
+   `.local/tutor-run-5.txt`.
 4. Push after every commit. Update this file at the end of the session (not a temp copy).
 
 ## Next steps, in order
 
 Each step says what to do, what "done" looks like, and what to write back here.
 
-### 3. First real-model trial
+### 3. First real-model trial (done 2026-09-03)
 
-Purpose: tune the `run_script` description in `_toolset.py` and the teaching copy in
-`_teaching.py` from what a model actually gets wrong. The test suite uses only `TestModel` and
-`FunctionModel`; keep it that way. The trial is a scratch script, not a test.
+Provider and model: Anthropic, `claude-opus-5`, through `Agent('anthropic:claude-opus-5')` with
+the key loaded by `python-dotenv` from `.env`. Harness: `examples/tutor.py`, tasks `practice`
+(fan-out, filter, second fan-out with `_on_error='skip'` over a tool that fails for one topic),
+`reviews` (fan-out, guard, side-effecting fan-out), `impossible` (no tool can do it).
 
-Setup, already written: `.local/trial.py` (git-ignored) builds an `Agent` with `ScriptMode` over
-four tools (`list_issues` returns a list, `close_issue` takes an item, `lookup_assignee` fails half
-the time, `repo_summary` is untyped) and runs four tasks: fan-out, guard, error branch, and one
-impossible with the folded tools (`unknown_tool`). It writes `.local/trial-transcript.md` with
-every script, every retry message, and a count of retry headlines by frequency.
+Turns to success, before and after tuning:
 
-```bash
-SCRIPTMODE_TRIAL_MODEL=<provider:model> uv run python .local/trial.py
-```
+| Task | Run 1 | Run 5 (after) |
+| --- | --- | --- |
+| practice | 1 script, 0 retries | 1 script, 0 retries |
+| reviews | 3 scripts, 2 retries | 1 script, 0 retries |
+| impossible | 1 script, 0 retries | 1 script, 0 retries |
 
-The provider's usual env var must hold the key. Do not write a key into any file in the
-workspace; note here which provider and model were used, not the key.
+Rejection kinds that fired, by frequency, across runs 1 to 4 (all on the `reviews` task):
 
-Plan for the session:
+1. `syntax_error` on line 1, three times: the intent line was `« ... »`, `« # ...`, then `// ...`.
+   The model reaches for a non-Python comment marker on the first line only. The copy recovered
+   it in one turn every time. Fixed up front by the description's first bullet: "a Python `#`
+   comment ... never `//` or quotes" and a worked example that starts with `#`.
+2. `too_many_calls`, three times: `[:100]` on both fan-outs plus one call is 201 against 200.
+   The copy recovered it in one turn (the model went to `[:80]`). Two rounds of description
+   wording ("pick N as what you expect") did not change the first script; the model anchors on
+   the per-fan-out limit. Fixed by raising `Limits.max_total_calls` to 500 and stating in the
+   limits sentence that the total counts every fan-out at its bound.
 
-1. Run the trial once as is. If the model is `pydantic_ai.models.ALLOW_MODEL_REQUESTS`-blocked,
-   that is `tests/conftest.py` leaking; the trial does not import it, so it should not happen.
-2. Read `.local/trial-transcript.md` top to bottom before changing anything. Classify every retry
-   by rejection kind (the headline of each retry names it in prose; map back to `RejectionKind`
-   in `_teaching.py`).
-3. For each kind that fired: did the next script fix that line? If yes, the copy works, leave it.
-   If no, rewrite that one template under `mattpocock-skills:writing-for-agents`, then rerun only
-   that task (edit `TASKS` in `trial.py` to one entry). A template change needs no test change
-   unless a test asserts on its text; `grep -n` the tests for a phrase before changing it.
-4. Anything the model got wrong on its *first* script is a description gap, not a copy gap. Fix
-   `_DESCRIPTION_HEAD` in `_toolset.py` and the README grammar table together; the README is the
-   reference when they disagree. Rerun all four tasks after a description change.
-5. Watch specifically for: (a) `reuse after success` giving a stale answer when a task repeats a
-   step name across runs (the four tasks share one agent, so the record is shared; if the guard
-   task reuses `issues` from the fan-out task, that is the stale read the "Known and accepted"
-   entry warned about, and the fix is to reuse only from an `error` record); (b) the model writing
-   `for` without a slice, and whether `unbounded_for` copy gets it to `[:N]` in one turn; (c) the
-   impossible task: it should stop after one `unknown_tool` retry, not keep trying.
-6. Record here: provider and model used; kinds by frequency; which templates changed and why;
-   which description lines changed and why; turns-to-success per task before and after.
+Not observed: `unknown_tool` (the impossible task never called a missing tool; the model gathered
+what it could and said it had no email tool), `unbounded_for`, `forgot_await`, stale reuse across
+tasks (the three tasks use different step names, so nothing was reused). The teaching copy did its
+job every time it fired; no template was changed.
 
-Done when the model succeeds in one turn on the ordinary tasks and recovers in one retry on the
-rest. Commit as "Tune run_script description and teaching copy from first trial", then push.
+Trial transcripts: `.local/tutor-run-1.txt` (before) to `tutor-run-5.txt` (after).
 
 ### 4. Keep CONTEXT.md current
 
-After step 3, grep the diff for nouns not in the glossary. Either rename to a glossary term or add
-the term with an "Avoid" line. Use `mattpocock-skills:domain-modeling`. Checked after step 2:
-the review commits use only glossary terms (dispatch, fan-out, item, record); no change needed.
+Before any step 5 ADR, grep the diff for nouns not in the glossary. Either rename to a glossary
+term or add the term with an "Avoid" line. Use `mattpocock-skills:domain-modeling`. Checked after
+steps 2 and 3: the commits use only glossary terms (dispatch, fan-out, item, record, limits,
+teaching copy); the example's own nouns (topic, mastery, exercise) are domain data, not engine
+vocabulary. No change needed.
 
 ### 5. Deferred backlog
 
