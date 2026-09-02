@@ -72,10 +72,20 @@ what it owns.
 
 Public surface is `pydantic_ai_scriptmode/__init__.py` (`__all__`).
 
-`examples/tutor.py` is the runnable example and the trial harness: four tools, three tasks, one
-`run_script` call each; `uv run python examples/tutor.py [task ...]`. It needs the `examples`
-dependency group (`uv sync --all-groups`; a single `--group` drops the others) and
-`ANTHROPIC_API_KEY` in `.env`.
+`examples/tutor.py` is a test harness first and an example second; the user intends to remove it
+later, so nothing else may depend on it. It builds the same four tools into two agents, one with
+plain tools and one with `ScriptMode`, runs each task on both, prints every script, retry, and
+return, and ends with a comparison table (model requests, tool calls, total tokens).
+`uv run python examples/tutor.py [task ...]`, tasks `practice`, `reviews`, `impossible`. Needs
+`ANTHROPIC_API_KEY` in `.env` (git-ignored). All dependency groups are default in `[tool.uv]`, so
+plain `uv sync` and `uv run` install the linters and the Anthropic extra together.
+
+How a task runs in script mode: the model gets one tool, `run_script`, whose description carries
+the four signatures. It answers with one script. `ScriptModeToolset.call_tool` compiles it to a
+plan, validates it against the signatures and `Limits`, and `execute_plan` drives the steps
+through `_Dispatcher`, which calls each folded tool through a nested `ToolManager`. The model's
+second request sees `{'status': ..., 'output': ...}` and writes the summary. A retry message
+(compile, validate, or a failed step) costs one more request and settled steps are reused.
 
 `.local/` is git-ignored scratch: `tutor-run-1.txt` to `tutor-run-5.txt` are the trial transcripts;
 the scheduler answer key and swap helper from the learning phase are redundant and safe to delete.
@@ -196,11 +206,39 @@ Rejection kinds that fired, by frequency, across runs 1 to 4 (all on the `review
    limits sentence that the total counts every fan-out at its bound.
 
 Not observed: `unknown_tool` (the impossible task never called a missing tool; the model gathered
-what it could and said it had no email tool), `unbounded_for`, `forgot_await`, stale reuse across
-tasks (the three tasks use different step names, so nothing was reused). The teaching copy did its
-job every time it fired; no template was changed.
+what it could and said it had no email tool), `forgot_await`, stale reuse across tasks (the three
+tasks use different step names, so nothing was reused). The teaching copy did its job every time
+it fired; no template was changed.
 
-Trial transcripts: `.local/tutor-run-1.txt` (before) to `tutor-run-5.txt` (after).
+Plain tools against script mode, same model, same tools, one run each (`.local/tutor-compare-*`):
+
+| Task | Plain tools | Script mode |
+| --- | --- | --- |
+| practice | 4 requests, 12 calls, 1 retry, 7172 tokens | 3 requests, 12 calls, 1 retry, 8493 tokens |
+| reviews | 4 requests, 14 calls, 6816 tokens | 2 requests, 14 calls, 4715 tokens |
+| impossible | 3 requests, 9 calls, 4488 tokens | 2 requests, 9 calls, 4589 tokens |
+
+Read it as: the model already parallelises calls it can see at once (eight `get_mastery` in one
+response), so plain tools cost one request per *dependent* stage, not per call. Script mode
+collapses every stage into two requests. Tokens are a wash at this size (the description is about
+1.5k tokens and the results are small); the saving grows with the number of stages and with result
+size, since intermediate results never enter the model's context. Do not quote these numbers as a
+benchmark; one run each, and the practice row includes a retry on each side.
+
+Two more findings from the comparison run:
+
+- `unbounded_for` fired once: the model wrote `target = weak[:3]` and then fanned out over
+  `target`. The bound was declared, one line up, on a derivation; the compiler wants the literal on
+  the fan-out's own iterable. Recovered in one retry (`target[:3]`). Candidate for a small
+  compiler change, listed under step 5.
+- A plain tool exception ends a pydantic-ai run outright; the plain agent crashed on the first
+  practice run until `fetch_exercises` raised `ModelRetry`. Script mode had already turned the
+  same exception into a `CallError` the script's `_on_error='skip'` handled. That is a real
+  difference in failure handling, not a comparison artefact, but the harness now raises
+  `ModelRetry` so both sides can recover.
+
+Trial transcripts: `.local/tutor-run-1.txt` (before) to `tutor-run-5.txt` (after),
+`.local/tutor-compare-1.txt` and `-2.txt` (plain against script).
 
 ### 4. Keep CONTEXT.md current
 
@@ -217,6 +255,11 @@ matter `status: proposed`, one paragraph of decision and one of cost, in the voi
 the ADR, run `mattpocock-skills:grilling` on it if the choice is not obvious, get the user's yes,
 then `mattpocock-skills:tdd` for the code. One commit for the ADR, then commits per behaviour.
 
+0. Bound through a derivation (small, no ADR needed, `mattpocock-skills:tdd`): let a fan-out over
+   a bare name take its bound from that name's derivation when the derivation is `xs[:N]`,
+   `xs[a:N]`, or a list display. `compile_script` already extracts the literal bound; the change
+   is a lookup in `defined` derivations before rejecting with `unbounded_for`. Keep the rejection
+   for anything else. Test with the exact script from `.local/tutor-compare-2.txt`.
 1. `dynamic_catalog`: rebuild the catalog per run so tools added mid-conversation are foldable.
    Smallest item; a good first ADR. Today `get_tools` already recomputes the fold each call, so
    the question is only whether the description must be stable within a run for prompt caching

@@ -24,7 +24,8 @@ classifiers = [
 dependencies = [
     # `ToolManager.handle_call(wrap_validation_errors=False)`, `ToolDefinition.render_signature`,
     # `matches_tool_selector`, and `AbstractCapability` ordering all exist by this release.
-    'pydantic-ai-slim>=2.36.0',
+    "pydantic-ai-slim[anthropic]>=2.36.0",
+    "python-dotenv>=1.2.3",
 ]
 
 [dependency-groups]
@@ -43,6 +44,10 @@ examples = [
     'pydantic-ai-slim[anthropic]>=2.36.0',
     'python-dotenv>=1.0',
 ]
+
+[tool.uv]
+# Every sync installs every group, so `uv run` for the example never prunes the linters.
+default-groups = ['dev', 'lint', 'examples']
 
 [tool.hatch.build.targets.wheel]
 packages = ['pydantic_ai_scriptmode']

@@ -1,4 +1,4 @@
-"""A spaced-practice tutor: four tools, one `run_script` call per task.
+"""A spaced-practice tutor: four tools, each task run with plain tools and then with ScriptMode.
 
 The shape ScriptMode is for: fan out over a list, filter on what came back, act on the survivors.
 Plain tool use pays a model round trip per call; a script pays one.
@@ -17,7 +17,7 @@ import sys
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
-from pydantic_ai import Agent
+from pydantic_ai import Agent, ModelRetry
 from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
@@ -25,6 +25,8 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolReturnPart,
 )
+from pydantic_ai.toolsets import FunctionToolset
+from pydantic_ai.usage import RunUsage
 
 from pydantic_ai_scriptmode import RUN_SCRIPT_TOOL_NAME, ScriptMode
 
@@ -83,42 +85,47 @@ SCORES = {
 NO_BANK = {'algebra-1'}  # fetch_exercises fails for this topic
 scheduled: list[tuple[str, int]] = []
 
-agent: Agent[None, str] = Agent(
-    MODEL,
-    deps_type=type(None),
-    capabilities=[ScriptMode[None]()],
-    instructions=(
-        'You are a maths tutor managing one student. Use run_script to do a whole task in one call. '
-        'Reply with a one-line summary when done.'
-    ),
-)
+tools: FunctionToolset[None] = FunctionToolset()
 
 
-@agent.tool_plain
+@tools.tool_plain
 async def list_topics() -> list[Topic]:
     """Every topic in the syllabus."""
     return TOPICS
 
 
-@agent.tool_plain
+@tools.tool_plain
 async def get_mastery(topic_id: str) -> Mastery:
     """The student's current mastery of one topic."""
     return Mastery(topic_id, SCORES[topic_id])
 
 
-@agent.tool_plain
+@tools.tool_plain
 async def fetch_exercises(topic_id: str, n: int) -> list[Exercise]:
     """Up to n practice exercises for a topic. Fails if the topic has no exercise bank."""
     if topic_id in NO_BANK:
-        raise RuntimeError(f'no exercise bank for {topic_id}')
+        raise ModelRetry(f'no exercise bank for {topic_id}')  # recoverable in both modes
     return [Exercise(f'{topic_id}-{i}', topic_id, f'{topic_id} exercise {i}') for i in range(1, n + 1)]
 
 
-@agent.tool_plain
+@tools.tool_plain
 async def schedule_review(topic_id: str, days: int) -> str:
     """Schedule a review of a topic in a number of days."""
     scheduled.append((topic_id, days))
     return f'review of {topic_id} in {days} days'
+
+
+INSTRUCTIONS = 'You are a maths tutor managing one student. Reply with a one-line summary when done.'
+
+# The same tools, two ways: called one by one, or folded behind `run_script`.
+plain_agent: Agent[None, str] = Agent(MODEL, deps_type=type(None), toolsets=[tools], instructions=INSTRUCTIONS)
+script_agent: Agent[None, str] = Agent(
+    MODEL,
+    deps_type=type(None),
+    toolsets=[tools],
+    capabilities=[ScriptMode[None]()],
+    instructions=INSTRUCTIONS + ' Use run_script to do a whole task in one call.',
+)
 
 
 TASKS = {
@@ -129,15 +136,27 @@ TASKS = {
 }
 
 
-def show(messages: list[ModelMessage]) -> tuple[int, int]:
-    """Print every script, retry, and return in the run; count the scripts and retries."""
-    scripts = retries = 0
+@dataclass
+class Stats:
+    """What one run cost."""
+
+    requests: int
+    tool_calls: int
+    retries: int
+    tokens: int
+
+
+def show(messages: list[ModelMessage], usage: RunUsage) -> Stats:
+    """Print every script, retry, and return in the run; count what it cost."""
+    scripts = retries = tool_calls = 0
     for m in messages:
         if isinstance(m, ModelResponse):
             for p in m.parts:
                 if isinstance(p, ToolCallPart) and p.tool_name == RUN_SCRIPT_TOOL_NAME:
                     scripts += 1
                     print(f'--- script {scripts}\n{p.args_as_dict()["script"]}')
+                elif isinstance(p, ToolCallPart):
+                    tool_calls += 1
         else:
             for p in m.parts:
                 if isinstance(p, RetryPromptPart):
@@ -145,28 +164,48 @@ def show(messages: list[ModelMessage]) -> tuple[int, int]:
                     print(f'--- retry\n{p.model_response()}')
                 elif isinstance(p, ToolReturnPart) and p.tool_name == RUN_SCRIPT_TOOL_NAME:
                     print(f'--- return\n{p.content}')
-    return scripts, retries
+                    tool_calls += len(p.metadata['tool_calls']) if p.metadata else 0
+    return Stats(usage.requests, tool_calls, retries, usage.total_tokens)
+
+
+async def run_task(agent: Agent[None, str], label: str, prompt: str) -> Stats | None:
+    """Run one task on one agent and print the trace."""
+    print(f'--- [{label}]')
+    try:
+        result = await agent.run(prompt)
+    except Exception as e:  # noqa: BLE001 - the failure is the finding
+        print(f'raised {type(e).__name__}: {e}\n')
+        return None
+    stats = show(result.all_messages(), result.usage)
+    print(f'--- answer\n{result.output}')
+    print(
+        f'--- {stats.requests} model requests, {stats.tool_calls} tool calls, {stats.retries} retries, {stats.tokens} tokens\n'
+    )
+    return stats
 
 
 async def main() -> None:
-    """Run each task and print what the model wrote and what it got back."""
+    """Run each task both ways and print a comparison."""
     random.seed(0)
     print(f'model: {MODEL}\n')
     wanted = sys.argv[1:] or list(TASKS)
-    for name, prompt in ((n, TASKS[n]) for n in wanted):
+    rows: list[tuple[str, Stats | None, Stats | None]] = []
+    for name in wanted:
+        prompt = TASKS[name]
         print(f'=== {name}: {prompt}')
-        try:
-            result = await agent.run(prompt)
-        except Exception as e:  # noqa: BLE001 - the failure is the finding
-            print(f'raised {type(e).__name__}: {e}\n')
-            continue
-        scripts, retries = show(result.all_messages())
-        usage = result.usage
-        print(f'--- answer\n{result.output}')
-        print(
-            f'--- {scripts} script(s), {retries} retry(ies), {usage.requests} model requests, {usage.total_tokens} tokens\n'
-        )
-    print(f'scheduled: {scheduled}')
+        scheduled.clear()
+        plain = await run_task(plain_agent, 'plain tools', prompt)
+        scheduled.clear()
+        script = await run_task(script_agent, 'script mode', prompt)
+        rows.append((name, plain, script))
+
+    def cell(s: Stats | None) -> str:
+        return 'failed' if s is None else f'{s.requests} req / {s.tool_calls} calls / {s.tokens} tok'
+
+    print('=== comparison (model requests / tool calls / total tokens)')
+    print(f'{"task":<12} {"plain tools":<34} {"script mode":<34}')
+    for name, plain, script in rows:
+        print(f'{name:<12} {cell(plain):<34} {cell(script):<34}')
 
 
 if __name__ == '__main__':

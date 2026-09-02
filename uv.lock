@@ -516,7 +516,8 @@ name = "pydantic-ai-scriptmode"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "pydantic-ai-slim" },
+    { name = "pydantic-ai-slim", extra = ["anthropic"] },
+    { name = "python-dotenv" },
 ]
 
 [package.dev-dependencies]
@@ -537,7 +538,10 @@ lint = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pydantic-ai-slim", specifier = ">=2.36.0" }]
+requires-dist = [
+    { name = "pydantic-ai-slim", extras = ["anthropic"], specifier = ">=2.36.0" },
+    { name = "python-dotenv", specifier = ">=1.2.3" },
+]
 
 [package.metadata.requires-dev]
 dev = [
