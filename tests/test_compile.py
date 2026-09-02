@@ -16,6 +16,21 @@ summary = await post_summary(text=f'closed {len(closed)}', _on_error='skip')
 return {'closed': len(closed), 'summary': summary}
 """
 
+TRIAL_SCRIPT = """
+# Find the 3 weakest topics below 0.6 mastery and fetch 5 exercises each
+topics = await list_topics()
+masteries = [await get_mastery(topic_id=t.id) for t in topics[:50]]
+names = {t.id: t.name for t in topics}
+weak = sorted([m for m in masteries if m.score < 0.6], key=lambda m: m.score)
+target = weak[:3]
+if not target:
+    return {'practice_set': [], 'note': 'no topics below 0.6'}
+sets = [await fetch_exercises(topic_id=m.topic_id, n=5, _on_error='skip') for m in target]
+result = [{'topic_id': m.topic_id, 'name': names[m.topic_id], 'score': m.score, 'exercises': [{'id': e.id, 'prompt': e.prompt} for e in s]} for m, s in zip(target, sets) if s]
+skipped = [names[m.topic_id] for m, s in zip(target, sets) if not s]
+return {'practice_set': result, 'skipped': skipped}
+"""
+
 
 def kinds(source: str) -> list[str]:
     with pytest.raises(CompileError) as exc:
@@ -67,6 +82,29 @@ class TestGrammar:
         plan = compile_script('r = [await f(x=i) for i in [1, 2, 3]]')
         (step,) = plan.steps
         assert isinstance(step, CallStep) and step.max_items == 3
+
+    def test_fanout_takes_bound_from_derivation(self):
+        # The exact script from `.local/tutor-compare-2.txt`: the bound was declared one line up.
+        plan = compile_script(TRIAL_SCRIPT)
+        fanout = next(s for s in plan.steps if isinstance(s, CallStep) and s.name == 'sets')
+        assert fanout.each == 'target' and fanout.max_items == 3
+
+    @pytest.mark.parametrize(
+        'derivation,expected',
+        [
+            ('xs[:4]', 4),
+            ('xs[1:4]', 3),
+            ('[1, 2]', 2),
+        ],
+    )
+    def test_derivation_bound_forms(self, derivation: str, expected: int):
+        plan = compile_script(f'ys = {derivation}\nr = [await f(x=i) for i in ys]')
+        step = plan.steps[1]
+        assert isinstance(step, CallStep) and step.max_items == expected
+
+    def test_rebound_name_loses_its_bound(self):
+        assert kinds('ys = xs[:4]\nys = xs\nr = [await f(x=i) for i in ys]') == ['unbounded_for']
+        assert kinds('ys = xs[:4]\nys = await g()\nr = [await f(x=i) for i in ys]') == ['unbounded_for']
 
     def test_try_except_becomes_error_branch(self):
         plan = compile_script("try:\n    x = await fetch(url='u')\nexcept Exception as e:\n    x = {'error': str(e)}")

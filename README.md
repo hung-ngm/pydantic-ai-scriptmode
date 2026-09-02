@@ -80,7 +80,8 @@ without Pydantic AI (see "Using the engine directly").
 | `await tool(..., _reason='why')` | a call annotated for audit and approval |
 | trailing `return value` | the run's output (else the last step's value) |
 
-A fan-out bound must be a literal: `xs[:N]`, `xs[a:N]`, or a list display. N should be the most items
+A fan-out bound must be a literal: `xs[:N]`, `xs[a:N]`, or a list display, written on the fan-out or on
+the derivation it iterates (`target = weak[:3]` then `for m in target`). N should be the most items
 expected, not the limit: the validator adds every fan-out's N toward `max_total_calls`. Tool arguments are
 keyword-only. Rejected outright: `while`, unbounded `for`, `def`, `class`, `import`, augmented
 assignment, `return` before the last line, a tool call nested inside an expression, and a tool call

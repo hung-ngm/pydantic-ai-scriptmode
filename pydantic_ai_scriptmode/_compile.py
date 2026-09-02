@@ -41,6 +41,16 @@ class _Compiler:
     last_calls: tuple[str, ...] = ()
     output: str | None = None
     defined: set[str] = field(default_factory=set[str])
+    # Literal bounds carried by derivations (`target = weak[:3]`), so a fan-out over the bare
+    # name inherits the bound. A rebinding drops the entry.
+    bounds: dict[str, int] = field(default_factory=dict[str, int])
+
+    def define(self, name: str, bound: int | None = None) -> None:
+        self.defined.add(name)
+        if bound is None:
+            self.bounds.pop(name, None)
+        else:
+            self.bounds[name] = bound
 
     def reject(self, at: ast.AST, kind: RejectionKind, **details: object) -> None:
         self.issues.append(issue(kind, getattr(at, 'lineno', None), **details))
@@ -105,7 +115,7 @@ class _Compiler:
             source = self.expression(value)
             if source is not None:
                 self.steps.append(DeriveStep(name=name, expr=source, line=node.lineno))
-                self.defined.add(name)
+                self.define(name, _slice_bound(value))
 
     def expression_statement(self, node: ast.Expr) -> None:
         value = node.value
@@ -216,6 +226,8 @@ class _Compiler:
             self.reject(node, 'for_body')
             return
         bound = _slice_bound(gen.iter)
+        if bound is None and isinstance(gen.iter, ast.Name):
+            bound = self.bounds.get(gen.iter.id)
         if bound is None:
             self.reject(node, 'unbounded_for', iter=ast.unparse(gen.iter))
             return
@@ -274,12 +286,13 @@ class _Compiler:
                 )
             )
         self.steps.extend(group)
-        self.defined.update(s.name for s in group)
+        for s in group:
+            self.define(s.name)
         self.last_calls = tuple(s.name for s in group)
 
     def append_call(self, step: CallStep) -> None:
         self.steps.append(step)
-        self.defined.add(step.name)
+        self.define(step.name)
         self.last_calls = (step.name,)
 
     def is_tool_call(self, call: ast.Call) -> bool:
@@ -361,6 +374,7 @@ def _slice_bound(node: ast.expr) -> int | None:
     """The literal upper bound a fan-out iterable declares, or `None` when it declares none.
 
     `xs[:N]` and `xs[a:N]` are bounded by `N` (minus `a`); a list display is bounded by its length.
+    A bare name is bounded when its derivation was one of these; see `_Compiler.bounds`.
     """
     if isinstance(node, ast.List):
         return len(node.elts)
