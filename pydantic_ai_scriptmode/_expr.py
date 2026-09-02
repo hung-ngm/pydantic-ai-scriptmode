@@ -544,6 +544,11 @@ class _Builtin:
         return self.evaluator._call_builtin(self.name, list(args), kwargs)  # pyright: ignore[reportPrivateUsage]
 
 
+def is_function_value(value: Any) -> bool:
+    """Whether `value` is a lambda or builtin reference rather than data. Such values cannot be recorded."""
+    return isinstance(value, (_Closure, _Builtin))
+
+
 def _bind_target(target: ast.expr, value: Any, scope: dict[str, Any]) -> None:
     if isinstance(target, ast.Name):
         scope[target.id] = value

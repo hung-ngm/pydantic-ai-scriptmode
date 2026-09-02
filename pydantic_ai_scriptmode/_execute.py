@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic_ai_scriptmode._expr import EvalError, Evaluator, NodeBudget, parse_expression
+from pydantic_ai_scriptmode._expr import EvalError, Evaluator, NodeBudget, is_function_value, parse_expression
 from pydantic_ai_scriptmode._plan import CallStep, DeriveStep, GuardStep, Limits, Plan, Step, step_hash
 from pydantic_ai_scriptmode._record import Record, RunStatus, StepRecord, reusable_steps
 
@@ -140,9 +140,8 @@ class Runner:
                     )
                 assert step.each_var is not None
                 scopes: list[dict[str, Any]] = [{**self.env, step.each_var: item} for item in items]
-                value = list(
-                    await asyncio.gather(*(self.call_once(step, self.eval_args(step, scope)) for scope in scopes))
-                )
+                calls = [self.call_once(step, self.eval_args(step, scope)) for scope in scopes]
+                value = self.collect_items(step, await asyncio.gather(*calls, return_exceptions=True))
         except CallError as e:
             if step.fallback is not None:
                 scope = dict(self.env)
@@ -155,6 +154,25 @@ class Runner:
                 self.fail(step, str(e))
             return
         self.settle(step, 'done', value)
+
+    def collect_items(self, step: CallStep, results: list[Any]) -> list[Any]:
+        """Turn a fan-out's gathered results into the step value, once every item has settled.
+
+        Gathering with `return_exceptions` is what lets every item finish: without it the first
+        failure would settle the step while its siblings kept calling tools that nothing awaited.
+        A signal that must escape (approval, deferral, bug) wins over a `CallError`. With
+        `_on_error='skip'` a failed item settles to `None` and the others keep their values;
+        otherwise the first failure is the step's failure.
+        """
+        failures = [r for r in results if isinstance(r, BaseException)]
+        for failure in failures:
+            if not isinstance(failure, CallError):
+                raise failure
+        if failures and step.on_error == 'skip':
+            return [None if isinstance(r, BaseException) else r for r in results]
+        if failures:
+            raise failures[0]
+        return list(results)
 
     async def call_once(self, step: CallStep, args: dict[str, Any]) -> Any:
         async with self.semaphore:
@@ -174,6 +192,9 @@ class Runner:
 
     def settle(self, step: Step, status: str, value: Any = None, error: str | None = None) -> None:
         assert status in ('done', 'skipped', 'error', 'returned')
+        if is_function_value(value):
+            # A record must hold data: it is stored, reused, and returned to the model.
+            raise EvalError(f'`{step.name}` is a function, not a value; write the lambda inline where it is used')
         self.settled[step.name] = StepRecord(hash=step_hash(step), status=status, value=value, error=error)  # pyright: ignore[reportArgumentType]
         if status in ('done', 'skipped'):
             self.env[step.name] = value
@@ -255,6 +276,8 @@ async def execute_plan(
     elif plan.output is not None:
         try:
             output = runner.eval(plan.output)
+            if is_function_value(output):
+                raise EvalError('the result is a function, not a value')
         except EvalError as e:
             status, at, error = 'error', 'return', str(e)
     elif plan.steps:

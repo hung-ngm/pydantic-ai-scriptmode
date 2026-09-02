@@ -76,7 +76,7 @@ without Pydantic AI (see "Using the engine directly").
 | `a, b = await asyncio.gather(tool_a(...), tool_b(...))` | concurrent call steps |
 | `try: x = await tool(...)` / `except Exception as e: x = fallback` | a call step with an error branch; `e` is the error message |
 | `try: await tool(...)` / `except Exception: pass` | a call step that settles to `None` on failure |
-| `await tool(..., _on_error='skip')` | the same, as a call option |
+| `await tool(..., _on_error='skip')` | the same, as a call option; in a fan-out only the failed items settle to `None` |
 | `await tool(..., _reason='why')` | a call annotated for audit and approval |
 | trailing `return value` | the run's output (else the last step's value) |
 

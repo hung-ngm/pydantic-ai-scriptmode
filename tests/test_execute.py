@@ -112,6 +112,49 @@ class TestExecute:
         assert result.output is None
         assert result.record.steps['x'].status == 'skipped'
 
+    async def test_fanout_skip_settles_failed_items_only(self):
+        def f(k: int) -> int:
+            if k == 2:
+                raise CallError('boom')
+            return k * 10
+
+        tools = FakeTools(xs=[1, 2, 3], f=f)
+        result = await run("xs = await xs()\nys = [await f(k=x, _on_error='skip') for x in xs[:3]]\nreturn ys", tools)
+        assert result.output == [10, None, 30]
+        assert result.record.steps['ys'].status == 'done'
+
+    async def test_fanout_failure_waits_for_every_item(self):
+        def f(k: int) -> int:
+            if k == 1:
+                raise CallError('boom')
+            return k
+
+        tools = FakeTools(xs=[1, 2, 3], f=f)
+        result = await run('xs = await xs()\nys = [await f(k=x) for x in xs[:3]]', tools)
+        assert result.status == 'error' and result.at == 'ys' and result.error == 'boom'
+        assert len(tools.calls) == 4 and tools.in_flight == 0
+
+    async def test_fanout_escaping_signal_wins_over_call_error(self):
+        class Signal(Exception):
+            pass
+
+        def f(k: int) -> int:
+            if k == 1:
+                raise CallError('boom')
+            raise Signal()
+
+        with pytest.raises(Signal):
+            await run(
+                "xs = await xs()\nys = [await f(k=x, _on_error='skip') for x in xs[:2]]", FakeTools(xs=[1, 2], f=f)
+            )
+
+    async def test_function_valued_step_and_output_are_errors(self):
+        result = await run('f = lambda i: i + 1\nreturn f(1)', FakeTools())
+        assert result.status == 'error' and result.at == 'f'
+        assert 'is a function' in (result.error or '')
+        result = await run('x = await f(k=1)\nreturn len', FakeTools(f=1))
+        assert result.status == 'error' and result.at == 'return'
+
     async def test_non_call_error_propagates(self):
         class Signal(Exception):
             pass

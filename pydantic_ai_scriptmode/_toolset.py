@@ -58,7 +58,7 @@ literal slice `[:N]` or a literal list
 - `a, b = await asyncio.gather(tool_a(...), tool_b(...))` runs calls concurrently; sequential \
 `await`s run in order
 - `try: x = await tool(...)` / `except Exception as e: x = <fallback>` handles a failed call; \
-`_on_error='skip'` on a call settles it to `None` on failure instead
+`_on_error='skip'` on a call settles it to `None` on failure instead (in a fan-out, only the failed items)
 - `_reason='why'` on a call records why it is made
 - `return <value>` as the last line is the result; without it the last step's value is returned
 
