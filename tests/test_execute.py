@@ -151,8 +151,8 @@ class TestExecute:
     async def test_function_valued_step_and_output_are_errors(self):
         result = await run('f = lambda i: i + 1\nreturn f(1)', FakeTools())
         assert result.status == 'error' and result.at == 'f'
-        assert 'is a function' in (result.error or '')
-        result = await run('x = await f(k=1)\nreturn len', FakeTools(f=1))
+        assert 'holds a function' in (result.error or '')
+        result = await run('x = await f(k=1)\nreturn {"k": [len]}', FakeTools(f=1))
         assert result.status == 'error' and result.at == 'return'
 
     async def test_non_call_error_propagates(self):

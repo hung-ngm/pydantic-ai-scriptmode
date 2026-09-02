@@ -6,12 +6,11 @@ from typing import Any
 
 import pytest
 from pydantic_ai import Agent, RunContext
-from pydantic_ai.capabilities import ToolSearch
+from pydantic_ai.capabilities import HandleDeferredToolCalls, ToolSearch
 from pydantic_ai.exceptions import ApprovalRequired, UnexpectedModelBehavior, UserError
 from pydantic_ai.messages import ModelMessage, ModelResponse, RetryPromptPart, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
-from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets.function import FunctionToolset
 from pydantic_ai.usage import RunUsage
 
@@ -152,26 +151,43 @@ class TestScriptMode:
         result = await agent.run('go')
         assert result.output == "{'status': 'done', 'output': 'closed 1'}"
 
-    async def test_approval_required_propagates(self):
-        async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-            return ModelResponse(parts=[ToolCallPart(RUN_SCRIPT_TOOL_NAME, {'script': 'x = await danger(n=1)'})])
+    async def test_approval_is_resolved_inline_or_is_a_user_error(self):
+        def build(*capabilities: Any) -> tuple[Agent[None, str], list[bool]]:
+            seen: list[bool] = []
 
-        agent = Agent(
-            FunctionModel(model),
-            deps_type=type(None),
-            capabilities=[ScriptMode[None]()],
-            output_type=[str, DeferredToolRequests],
-        )
+            async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+                last = messages[-1].parts[-1]
+                if isinstance(last, ToolReturnPart):
+                    return ModelResponse(parts=[TextPart(str(last.content))])
+                return ModelResponse(parts=[ToolCallPart(RUN_SCRIPT_TOOL_NAME, {'script': 'x = await danger(n=1)'})])
 
-        @agent.tool
-        async def danger(ctx: RunContext[None], n: int) -> int:
-            if not ctx.tool_call_approved:
-                raise ApprovalRequired
-            return n
+            agent = Agent(FunctionModel(model), deps_type=type(None), capabilities=[*capabilities, ScriptMode[None]()])
 
+            @agent.tool
+            async def danger(ctx: RunContext[None], n: int) -> int:
+                seen.append(ctx.tool_call_approved)
+                if not ctx.tool_call_approved:
+                    raise ApprovalRequired
+                return n
+
+            return agent, seen
+
+        # Approving `run_script` on resume cannot reach the nested call, which would raise again forever,
+        # so an unresolved approval is a configuration error that names the capability to add.
+        agent, seen = build()
+        with pytest.raises(UserError, match='HandleDeferredToolCalls'):
+            await agent.run('go')
+        assert seen == [False]
+
+        agent, seen = build(HandleDeferredToolCalls(lambda ctx, requests: requests.build_results(approve_all=True)))
         result = await agent.run('go')
-        assert isinstance(result.output, DeferredToolRequests)
-        assert [c.tool_name for c in result.output.approvals] == [RUN_SCRIPT_TOOL_NAME]
+        assert result.output == "{'status': 'done', 'output': 1}"
+        assert seen == [False, True]
+
+    async def test_function_in_result_is_a_retry(self):
+        agent, _ = build_agent("issues = await list_issues(repo='api')\nreturn [len]", 'x = 1')
+        result = await agent.run('go')
+        assert 'Step `return` failed: the result holds a function' in retry_text(result.all_messages())
 
     async def test_record_is_shared_across_runs_in_a_conversation(self):
         store = InMemoryRecordStore()

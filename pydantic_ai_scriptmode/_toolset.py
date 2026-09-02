@@ -20,8 +20,8 @@ from pydantic_core import to_jsonable_python
 from typing_extensions import TypedDict
 
 from pydantic_ai_scriptmode._compile import CompileError, compile_script
-from pydantic_ai_scriptmode._execute import CallError, execute_plan
-from pydantic_ai_scriptmode._plan import CallStep, Limits
+from pydantic_ai_scriptmode._execute import CallError, ExecuteResult, execute_plan
+from pydantic_ai_scriptmode._plan import CallStep, Limits, Plan
 from pydantic_ai_scriptmode._record import InMemoryRecordStore, RecordStore
 from pydantic_ai_scriptmode._teaching import Issue
 from pydantic_ai_scriptmode._validate import ToolSignature, validate_plan
@@ -109,6 +109,67 @@ def _signature_of(tool_def: ToolDefinition) -> ToolSignature:
 
 def _render_issues(headline: str, issues: Sequence[Issue]) -> str:
     return headline + '\n' + '\n'.join(f'- {i.render()}' for i in issues)
+
+
+def _execution_retry(plan: Plan, outcome: ExecuteResult) -> str:
+    """The retry message for a run that failed at a step, naming what a corrected script will reuse."""
+    declared = {s.name for s in plan.steps}
+    settled = sorted(n for n, s in outcome.record.steps.items() if s.status in ('done', 'skipped') and n in declared)
+    message = f'Step `{outcome.at}` failed: {outcome.error}'
+    if settled:
+        message += f'\nSteps that settled and will be reused by a corrected script: {", ".join(settled)}.'
+    return message
+
+
+@dataclass
+class _Dispatcher:
+    """Performs one plan's calls through a nested `ToolManager`, keeping the parts for the metadata.
+
+    Every failure the script can handle becomes a `CallError`. An unresolved approval or deferral
+    is a `UserError`, as in harness `CodeMode`: the nested call is not a call the model made, so
+    the agent cannot resume it by approving `run_script`. `HandleDeferredToolCalls` resolves it
+    inline instead.
+    """
+
+    tool_manager: ToolManager[Any]
+    sanitized_to_original: dict[str, str]
+    parent_id: str
+    calls: dict[str, ToolCallPart] = field(default_factory=dict[str, ToolCallPart])
+    returns: dict[str, ToolReturnPart] = field(default_factory=dict[str, ToolReturnPart])
+
+    async def __call__(self, step: CallStep, args: dict[str, Any]) -> Any:
+        original = self.sanitized_to_original.get(step.tool, step.tool)
+        call_id = f'{self.parent_id}__{len(self.calls) + 1}'
+        part = ToolCallPart(tool_name=original, args=args, tool_call_id=call_id)
+        self.calls[call_id] = part
+        try:
+            result = await self.tool_manager.handle_call(part, wrap_validation_errors=False)
+        except (CallDeferred, ApprovalRequired) as e:
+            raise UserError(
+                f'Tool {original!r} raised {type(e).__name__} inside a script, but no `HandleDeferredToolCalls` '
+                'capability resolved it. Add one to the agent so approval and deferral are handled inline; '
+                'a script cannot pause and resume at one call.'
+            ) from e
+        except ModelRetry as e:
+            raise CallError(e.message) from e
+        except ValidationError as e:
+            details = '; '.join(f'{".".join(str(p) for p in err["loc"])}: {err["msg"]}' for err in e.errors())
+            raise CallError(f'invalid arguments for `{step.tool}`: {details}') from e
+        except Exception as e:
+            raise CallError(f'`{step.tool}` failed: {type(e).__name__}: {e}') from e
+        if isinstance(result, ToolDenied):
+            self.returns[call_id] = ToolReturnPart(
+                tool_name=original, content=result.message, tool_call_id=call_id, outcome='denied'
+            )
+            raise CallError(f'`{step.tool}` was denied: {result.message}')
+        metadata: Any = None
+        if isinstance(result, ToolReturn):
+            metadata = result.metadata
+            result = result.return_value
+        self.returns[call_id] = ToolReturnPart(
+            tool_name=original, content=result, tool_call_id=call_id, metadata=metadata
+        )
+        return to_jsonable_python(result)
 
 
 @dataclass(kw_only=True)
@@ -204,63 +265,22 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
         if issues:
             raise ModelRetry(_render_issues('The script is not executable:', issues))
 
-        nested_calls: dict[str, ToolCallPart] = {}
-        nested_returns: dict[str, ToolReturnPart] = {}
-        parent_id = ctx.tool_call_id or 'pyd_ai_script_mode'
-
-        async def dispatch(step: CallStep, args: dict[str, Any]) -> Any:
-            original = tool.sanitized_to_original.get(step.tool, step.tool)
-            call_id = f'{parent_id}__{len(nested_calls) + 1}'
-            part = ToolCallPart(tool_name=original, args=args, tool_call_id=call_id)
-            nested_calls[call_id] = part
-            try:
-                result = await tool_manager.handle_call(part, wrap_validation_errors=False)
-            except (CallDeferred, ApprovalRequired):
-                raise
-            except ModelRetry as e:
-                raise CallError(e.message) from e
-            except ValidationError as e:
-                details = '; '.join(f'{".".join(str(p) for p in err["loc"])}: {err["msg"]}' for err in e.errors())
-                raise CallError(f'invalid arguments for `{step.tool}`: {details}') from e
-            except Exception as e:
-                raise CallError(f'`{step.tool}` failed: {type(e).__name__}: {e}') from e
-            if isinstance(result, ToolDenied):
-                nested_returns[call_id] = ToolReturnPart(
-                    tool_name=original, content=result.message, tool_call_id=call_id, outcome='denied'
-                )
-                raise CallError(f'`{step.tool}` was denied: {result.message}')
-            metadata: Any = None
-            if isinstance(result, ToolReturn):
-                metadata = result.metadata
-                result = result.return_value
-            nested_returns[call_id] = ToolReturnPart(
-                tool_name=original, content=result, tool_call_id=call_id, metadata=metadata
-            )
-            return to_jsonable_python(result)
-
+        dispatch = _Dispatcher(tool_manager, tool.sanitized_to_original, ctx.tool_call_id or 'pyd_ai_script_mode')
         conversation_id = ctx.conversation_id
         record = await self.record_store.get(conversation_id) if conversation_id is not None else None
         outcome = await execute_plan(plan, dispatch=dispatch, limits=self.limits, record=record)
         if conversation_id is not None:
             await self.record_store.put(conversation_id, outcome.record)
 
-        result_metadata = {
+        if outcome.status == 'error':
+            raise ModelRetry(_execution_retry(plan, outcome))
+        metadata = {
             'script_mode': True,
             'plan': plan.to_dict(),
-            'tool_calls': nested_calls,
-            'tool_returns': nested_returns,
+            'tool_calls': dispatch.calls,
+            'tool_returns': dispatch.returns,
         }
-        if outcome.status == 'error':
-            settled = sorted(
-                n
-                for n, s in outcome.record.steps.items()
-                if s.status in ('done', 'skipped') and n in {s.name for s in plan.steps}
-            )
-            message = f'Step `{outcome.at}` failed: {outcome.error}'
-            if settled:
-                message += f'\nSteps that settled and will be reused by a corrected script: {", ".join(settled)}.'
-            raise ModelRetry(message)
-        return ToolReturn(return_value={'status': outcome.status, 'output': outcome.output}, metadata=result_metadata)
+        return ToolReturn(return_value={'status': outcome.status, 'output': outcome.output}, metadata=metadata)
 
     def _fold(self, tools: dict[str, ToolsetTool[AgentDepsT]]) -> tuple[dict[str, ToolDefinition], dict[str, str]]:
         callable_defs: dict[str, ToolDefinition] = {}

@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic_ai_scriptmode._expr import EvalError, Evaluator, NodeBudget, is_function_value, parse_expression
+from pydantic_ai_scriptmode._expr import EvalError, Evaluator, NodeBudget, holds_function_value, parse_expression
 from pydantic_ai_scriptmode._plan import CallStep, DeriveStep, GuardStep, Limits, Plan, Step, step_hash
 from pydantic_ai_scriptmode._record import Record, RunStatus, StepRecord, reusable_steps
 
@@ -192,9 +192,9 @@ class Runner:
 
     def settle(self, step: Step, status: str, value: Any = None, error: str | None = None) -> None:
         assert status in ('done', 'skipped', 'error', 'returned')
-        if is_function_value(value):
+        if holds_function_value(value):
             # A record must hold data: it is stored, reused, and returned to the model.
-            raise EvalError(f'`{step.name}` is a function, not a value; write the lambda inline where it is used')
+            raise EvalError(f'`{step.name}` holds a function, not a value; write the lambda inline where it is used')
         self.settled[step.name] = StepRecord(hash=step_hash(step), status=status, value=value, error=error)  # pyright: ignore[reportArgumentType]
         if status in ('done', 'skipped'):
             self.env[step.name] = value
@@ -276,8 +276,8 @@ async def execute_plan(
     elif plan.output is not None:
         try:
             output = runner.eval(plan.output)
-            if is_function_value(output):
-                raise EvalError('the result is a function, not a value')
+            if holds_function_value(output):
+                raise EvalError('the result holds a function, not a value')
         except EvalError as e:
             status, at, error = 'error', 'return', str(e)
     elif plan.steps:

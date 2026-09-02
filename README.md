@@ -167,8 +167,9 @@ Each stage that rejects a script raises `ModelRetry`, so the model gets one mess
 
 A tool that raises, returns `ModelRetry`, fails argument validation, or is denied becomes a
 `CallError` inside the engine, which the script's error branch can catch. `ApprovalRequired` and
-`CallDeferred` propagate out of `run_script` exactly as they do in `CodeMode`; add a
-`HandleDeferredToolCalls` capability to resolve them inline.
+`CallDeferred` must be resolved inline by a `HandleDeferredToolCalls` capability, as in `CodeMode`:
+a nested call is not one the model made, so approving `run_script` on resume could never reach it.
+Without a handler the run fails with a `UserError` that says so.
 
 On success the tool returns `{'status': 'done' | 'returned', 'output': ...}`. The `ToolReturn`
 metadata carries `plan` (the plan as plain data), `tool_calls`, and `tool_returns` (the nested parts
