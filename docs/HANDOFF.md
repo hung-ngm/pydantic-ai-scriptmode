@@ -17,7 +17,7 @@ strict, pytest) is green: 145 passed, no xfails, no skips. `git log` on `main`, 
 - `9a95a74` Charge sequence growth, catch OverflowError, refuse str.format
 - `79005aa` ScriptMode: inert-plan script mode for Pydantic AI
 
-No remote. The working tree is clean. Step 3 (real-model trial) is blocked only on a provider key:
+Remote: `origin` is the private repo `https://github.com/hung-ngm/pydantic-ai-scriptmode`, `main` tracks it. The working tree is clean. Step 3 (real-model trial) is blocked only on a provider key:
 none of the usual `*_API_KEY` variables was set in this session's environment.
 
 Session history, newest first:
