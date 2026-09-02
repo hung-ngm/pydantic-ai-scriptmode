@@ -57,6 +57,25 @@ class TestEvaluate:
         with pytest.raises(EvalError, match='budget'):
             evaluate('[i for i in range(1000)]', {}, budget=NodeBudget(100))
 
+    def test_budget_bounds_sequence_repetition_and_concatenation(self):
+        with pytest.raises(EvalError, match='budget'):
+            evaluate("'ab' * 10_000_000", {}, budget=NodeBudget(1000))
+        with pytest.raises(EvalError, match='budget'):
+            evaluate('[0] * 10_000_000', {}, budget=NodeBudget(1000))
+        with pytest.raises(EvalError, match='budget'):
+            evaluate('xs + xs', {'xs': [0] * 600}, budget=NodeBudget(1000))
+        assert ev("'ab' * 2 + 'c'") == 'ababc'
+        assert ev('[0] * -1 + [1]') == [1]
+
+    def test_overflow_is_eval_error(self):
+        with pytest.raises(EvalError, match='OverflowError'):
+            ev("int(float('inf'))")
+
+    def test_str_format_is_refused(self):
+        # `format` reads attributes through its field syntax, bypassing the dunder guard.
+        with pytest.raises(ExprError, match='`.format\\(\\)` is not an allowed method'):
+            ev("'{0.__class__}'.format(1)")
+
     def test_mutating_method_is_refused(self):
         with pytest.raises(ExprError) as exc:
             parse_expression('xs.append(1)')

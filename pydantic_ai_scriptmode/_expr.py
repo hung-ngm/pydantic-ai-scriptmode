@@ -85,7 +85,6 @@ _STR_METHODS = frozenset(
         'find',
         'rfind',
         'count',
-        'format',
         'title',
         'capitalize',
         'isdigit',
@@ -332,7 +331,16 @@ class Evaluator:
             return self._eval(node, env)
         except EvalError:
             raise
-        except (KeyError, IndexError, TypeError, ValueError, AttributeError, ZeroDivisionError) as e:
+        except (
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+            AttributeError,
+            ZeroDivisionError,
+            OverflowError,
+            RecursionError,
+        ) as e:
             raise EvalError(f'{type(e).__name__}: {e} in `{ast.unparse(node)}`') from e
 
     def _eval(self, node: ast.expr, env: Mapping[str, Any]) -> Any:  # noqa: C901
@@ -387,7 +395,9 @@ class Evaluator:
                     return result
             return result
         if isinstance(node, ast.BinOp):
-            return _BINARY_OPERATORS[type(node.op)](self.eval(node.left, env), self.eval(node.right, env))
+            left, right = self.eval(node.left, env), self.eval(node.right, env)
+            self._charge_sequence_growth(node.op, left, right)
+            return _BINARY_OPERATORS[type(node.op)](left, right)
         if isinstance(node, ast.UnaryOp):
             return _UNARY_OPERATORS[type(node.op)](self.eval(node.operand, env))
         if isinstance(node, ast.IfExp):
@@ -449,6 +459,16 @@ class Evaluator:
                         next_scopes.append(inner)
             scopes = next_scopes
         return scopes
+
+    def _charge_sequence_growth(self, op: ast.operator, left: Any, right: Any) -> None:
+        """Charge `+` and `*` on sequences for the value they build, so `'a' * 10**9` is not three nodes."""
+        if isinstance(op, ast.Add) and isinstance(left, (str, list)) and isinstance(right, (str, list)):
+            self.budget.spend(len(left) + len(right))  # pyright: ignore[reportUnknownArgumentType]
+        elif isinstance(op, ast.Mult):
+            if isinstance(left, int):
+                left, right = right, left
+            if isinstance(left, (str, list)) and isinstance(right, int):
+                self.budget.spend(max(0, len(left) * right))  # pyright: ignore[reportUnknownArgumentType]
 
     def _call(self, node: ast.Call, env: Mapping[str, Any]) -> Any:
         args = [self.eval(a, env) for a in node.args]
