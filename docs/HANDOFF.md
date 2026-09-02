@@ -1,4 +1,4 @@
-# Handoff: pydantic-ai-scriptmode (reviewed and trialled on a real model; next is the backlog)
+# Handoff: pydantic-ai-scriptmode (backlog started; ADR 0003 awaits the user's yes)
 
 Date: 2026-09-03
 Workspace: `/Users/hungng/Documents/AI/experiments/pydantic-experiments/`
@@ -9,9 +9,11 @@ session; do not write handoff copies elsewhere (no temp-directory copies, no pro
 ## Where things stand
 
 The package is complete, reviewed, trialled against a real model, committed, and pushed. `make all`
-(ruff format, ruff check, pyright strict, pytest) is green: 145 passed, no xfails, no skips.
+(ruff format, ruff check, pyright strict, pytest) is green: 150 passed, no xfails, no skips.
 `git log` on `main`, newest first (handoff-only commits omitted):
 
+- `57517ff` Fan-out takes its bound from the derivation it iterates (backlog item 0)
+- `1c87782` Tutor harness compares plain tools with script mode; all uv groups default
 - `79468b8` Tune the run_script description from the first trial; total calls 500
 - `35cbdd9` Tutor example and first real-model run; teach fan-out bound sizing
 - `84047d8` Validator refuses a hand-built fan-out with no bound
@@ -21,13 +23,23 @@ The package is complete, reviewed, trialled against a real model, committed, and
 - `79005aa` ScriptMode: inert-plan script mode for Pydantic AI
 
 Remote: `origin` is the private repo `https://github.com/hung-ngm/pydantic-ai-scriptmode`;
-`main` tracks `origin/main` and is in sync. Working tree clean. Commit straight to `main` and push
-after each commit; no force-push, no other branches yet.
+`main` tracks `origin/main` and is in sync. Commit straight to `main` and push after each commit;
+no force-push, no other branches yet.
 
-Steps 1 to 4 are done. What remains is the deferred backlog (step 5), each item an ADR first.
+Uncommitted, the user's own work in progress (do not touch, do not commit): Logfire instrumentation
+of `examples/tutor.py` (`logfire.configure`, `instrument_pydantic_ai`, four metrics per run) with
+`logfire>=4.41.0` added to the `examples` group in `pyproject.toml` and `uv.lock`.
+
+Steps 1 to 4 are done. Backlog item 0 is done. Item 1 has its ADR (`docs/adr/0003-dynamic-catalog.md`,
+`status: proposed`) and is waiting for the user's yes before code.
 
 Session history, newest first:
 
+- 2026-09-03 (latest): backlog item 0 done by TDD (`57517ff`): the compiler keeps `bounds`, the
+  literal bound of every derivation, and a fan-out over a bare name inherits it; a rebinding drops
+  it. Tests include the exact script from `.local/tutor-compare-2.txt`. README grammar paragraph
+  updated; teaching copy unchanged, so no tutor run was needed. Wrote ADR 0003 for item 1 after
+  reading harness `CodeMode.dynamic_catalog`; see "Next session".
 - 2026-09-03 (later): step 3 done. Built `examples/tutor.py`, ran it five times against
   `anthropic:claude-opus-5` with the key from `.env` (git-ignored, standard workspace key; an
   identity-linked key needs an `anthropic-workspace-id` header the SDK does not add, which cost
@@ -99,8 +111,9 @@ the scheduler answer key and swap helper from the learning phase are redundant a
   handled by `Runner.ready_steps`, not by edges.
 - "Forgot `await`" is a compile-time heuristic: a bare call to a name that is neither a builtin nor a
   step defined earlier. Truly unknown functions are the validator's `unknown_function`.
-- Fan-out bound must be a literal: `xs[:N]`, `xs[a:N]`, or a list display. Anything else is
-  `unbounded_for`.
+- Fan-out bound must be a literal: `xs[:N]`, `xs[a:N]`, or a list display, on the fan-out or on the
+  derivation a bare-name iterable was bound to (`_Compiler.bounds`). Anything else is
+  `unbounded_for`. Only a direct derivation counts; `b = a` does not carry `a`'s bound.
 - `try`/`except` accepts exactly one call statement and one recovery statement (`x = <expr>` to the
   same name, or `pass`). The error is bound to the `as` name as its message string.
 - Anonymous steps are named `_callN` / `_guardN` by position.
@@ -165,9 +178,16 @@ Known and accepted:
 
 ## Next session: start here
 
-1. `cd pydantic-ai-scriptmode && git pull && uv sync --all-groups && make all`. Expect 145 passed.
-2. Ask the user which backlog item to take (step 5 below; the order is a recommendation). Write
-   the ADR first and get a yes before code.
+1. `cd pydantic-ai-scriptmode && git pull && uv sync --all-groups && make all`. Expect 150 passed.
+2. Get the user's yes (or changes) on `docs/adr/0003-dynamic-catalog.md`, then flip it to
+   `status: accepted` and build it with `mattpocock-skills:tdd`, mirroring
+   `pydantic-ai-harness/pydantic_ai_harness/code_mode/` (`_capability.py` lines 105 to 215,
+   `_toolset.py` lines 555 to 700, tests at `tests/code_mode/test_code_mode.py` line 2917 on).
+   Pieces: `dynamic_catalog` field on `ScriptMode` and `ScriptModeToolset`; `_last_catalog` stash
+   in `get_tools` and `get_instructions` returning an `InstructionPart(dynamic=True)`; `for_run` /
+   `for_run_step` copying the stash; `_announced_tools` on the capability with `for_run` returning
+   a copy; `after_tool_execute` and `after_model_request` enqueueing a `SystemPromptPart`. Then a
+   tutor run with the flag on. If the user says no, move to item 2.
 3. Any change to the description, the teaching copy, or `Limits` must be checked with
    `uv run python examples/tutor.py` (needs `ANTHROPIC_API_KEY` in `.env`): all three tasks
    should succeed in one turn with zero retries, as they do now. Compare against
@@ -255,15 +275,10 @@ matter `status: proposed`, one paragraph of decision and one of cost, in the voi
 the ADR, run `mattpocock-skills:grilling` on it if the choice is not obvious, get the user's yes,
 then `mattpocock-skills:tdd` for the code. One commit for the ADR, then commits per behaviour.
 
-0. Bound through a derivation (small, no ADR needed, `mattpocock-skills:tdd`): let a fan-out over
-   a bare name take its bound from that name's derivation when the derivation is `xs[:N]`,
-   `xs[a:N]`, or a list display. `compile_script` already extracts the literal bound; the change
-   is a lookup in `defined` derivations before rejecting with `unbounded_for`. Keep the rejection
-   for anything else. Test with the exact script from `.local/tutor-compare-2.txt`.
-1. `dynamic_catalog`: rebuild the catalog per run so tools added mid-conversation are foldable.
-   Smallest item; a good first ADR. Today `get_tools` already recomputes the fold each call, so
-   the question is only whether the description must be stable within a run for prompt caching
-   (harness `CodeMode` has a `dynamic_catalog` flag for exactly this; read it first).
+0. Bound through a derivation: done 2026-09-03 (`57517ff`).
+1. `dynamic_catalog`: ADR 0003 proposed 2026-09-03. The fold was already dynamic; the item is
+   cache placement of the catalog, mirroring harness `CodeMode` (instructions part plus
+   discovery announcement). See "Next session" for the build plan.
 2. Suspend and detach: let a plan pause at an approval and resume from its record without
    re-dispatching settled steps. Needs: the record saved before the `UserError`, a `suspended`
    run status (callscript has one, `execute.ts` line ~71), and a way for `run_script` to be
