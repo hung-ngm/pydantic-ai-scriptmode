@@ -1,6 +1,6 @@
-# Handoff: pydantic-ai-scriptmode (complete and green; next is first commit, review, real-model trial)
+# Handoff: pydantic-ai-scriptmode (committed and reviewed; next is the real-model trial)
 
-Date: 2026-09-02
+Date: 2026-09-03
 Workspace: `/Users/hungng/Documents/AI/experiments/pydantic-experiments/`
 Project: `pydantic-ai-scriptmode/`
 This file is the single source of truth for progress. Update it in place at the end of each
@@ -8,11 +8,24 @@ session; do not write handoff copies elsewhere (no temp-directory copies, no pro
 
 ## Where things stand
 
-The package is complete. `make all` (ruff format, ruff check, pyright strict, pytest) is green:
-136 passed, no xfails, no skips. Nothing is committed: the project is not yet a git repository.
+The package is complete, reviewed, and committed. `make all` (ruff format, ruff check, pyright
+strict, pytest) is green: 145 passed, no xfails, no skips. `git log` on `main`, newest first:
+
+- `02f2f43` Validator refuses a hand-built fan-out with no bound
+- `69963e5` Unresolved approval inside a script is a UserError; dispatch is a class
+- `d52d178` Fan-out waits for every item; skip is per item; no function-valued steps
+- `9a95a74` Charge sequence growth, catch OverflowError, refuse str.format
+- `79005aa` ScriptMode: inert-plan script mode for Pydantic AI
+
+No remote. The working tree is clean. Step 3 (real-model trial) is blocked only on a provider key:
+none of the usual `*_API_KEY` variables was set in this session's environment.
 
 Session history, newest first:
 
+- 2026-09-03: steps 1, 2, and 4 done. First commit, then a whole-package review. The
+  `code-review` skill's multi-agent run hit the session rate limit mid-verification, so its merged
+  candidate list was verified by hand in-line; every confirmed finding is a commit above. Wrote
+  `.local/trial.py` for step 3. See "Review findings" below.
 - 2026-09-02 (this session): filled the two former user slots, `Runner.schedule` in `_execute.py`
   and `TEACHING` in `_teaching.py`. Removed the three xfail marks. Excluded `.local/` from ruff and
   pyright in `pyproject.toml`. See "Decisions made while coding".
@@ -48,8 +61,8 @@ what it owns.
 
 Public surface is `pydantic_ai_scriptmode/__init__.py` (`__all__`).
 
-`.local/` is git-ignored scratch: the scheduler answer key and a swap helper from the learning
-phase. Both are redundant now. Safe to delete; the trial script in step 3 below can live there too.
+`.local/` is git-ignored scratch: `trial.py` for step 3, plus the scheduler answer key and a swap
+helper from the learning phase, both redundant now and safe to delete.
 
 ## Decisions made while coding (not in the ADRs or README)
 
@@ -74,9 +87,24 @@ phase. Both are redundant now. Safe to delete; the trial script in step 3 below 
 - `Runner.schedule` is event-driven: in-flight steps are tasks keyed by name, `asyncio.wait`
   with `FIRST_COMPLETED` wakes on any settlement and launches what became ready. A halt gates new
   launches only, so in-flight steps settle and the record holds what their tools did. When
-  `run_step` raises (approval, deferral, bug) a `finally` cancels and awaits the remaining tasks so
-  none outlives the run. Open question for review: whether that cancel is right once
-  `HandleDeferredToolCalls` resumes a plan from its record.
+  `run_step` raises a `finally` cancels and awaits the remaining tasks so none outlives the run.
+  Settled in review: only a `UserError` (unresolved approval) or a bug can raise there, so the
+  cancel is right. Nothing resumes a plan from its record today; that is backlog item 2.
+- A fan-out gathers with `return_exceptions=True` so every item settles before the step does
+  (`Runner.collect_items`). `_on_error='skip'` on a fan-out settles only the failed items to
+  `None`; the step is `done` with a list. A whole-step skip (`skipped`, value `None`) is for a
+  single call only. `try`/`except` does not accept a fan-out body.
+- `ApprovalRequired` / `CallDeferred` from a folded tool are resolved inline by
+  `HandleDeferredToolCalls` through the nested `ToolManager`. Without a handler they become a
+  `UserError` (`_Dispatcher`), as in harness `CodeMode`: approving `run_script` on resume rebuilds
+  the nested call with `tool_call_approved=False`, so it would raise again forever (proved
+  empirically before the change).
+- A step value or the result may not hold a lambda or builtin reference, at any depth
+  (`holds_function_value`). `to_jsonable_python` would otherwise serialize the closure's evaluator
+  into the tool return and the record. Lambdas work inline (`sorted(xs, key=lambda ...)`).
+- `+` and `*` on `str`/`list` charge the `NodeBudget` for the value they build. `range` charges
+  before materializing. `OverflowError` and `RecursionError` are `EvalError`. `str.format` is
+  refused because its field syntax reads attributes past the dunder guard; f-strings cover it.
 - `unknown_function` is raised from two places with different details: the expression parser
   passes `name` only, the validator passes `name` and `step`. Its template uses only `name`. The
   parametrized test in `tests/test_teaching.py` catches templates that name an undocumented
@@ -84,41 +112,33 @@ phase. Both are redundant now. Safe to delete; the trial script in step 3 below 
 - `tests/test_script_mode.py::test_validation_error_is_a_retry` asserts on rendered copy, not kind
   names. Kind names no longer appear in any model-facing text.
 
+## Review findings (step 2, done 2026-09-03)
+
+Fixed, one commit each, listed under "Where things stand". The four candidates the previous
+session named resolved as: (1) `call_tool` split into `_Dispatcher` and `_execution_retry`; the
+compile and validate retries share `_render_issues`, the execution retry is a different shape and
+stays separate. (2) `_call_builtin` charges consistently; the real bypass was `*` and `+` on
+sequences, now charged. (3) Cancel is right; see "Decisions". (4) Accepted, below.
+
+Known and accepted:
+
+- `is_tool_call`: a bare call to a step name defined later in the script fires `forgot_await`
+  rather than `unknown_function`. Both are rejections with teaching copy; the model fixes the line
+  either way.
+- Reuse after success: a later script in the same conversation that repeats a step by name and
+  hash takes the recorded value instead of calling again, even after the earlier run succeeded.
+  This is callscript's rule ("the record is the session") and the description tells the model.
+  Revisit if the trial shows stale reads; the fix would be reusing only from an `error` record.
+- Record not saved when a `UserError` escapes: that is a configuration error, not a model error,
+  so no corrected script follows.
+- `float('inf')` and `nan` survive as values; JSON encoding at the model boundary is pydantic's
+  concern.
+- `_Dispatcher.__call__` calls `to_jsonable_python` on each result and the tool return is
+  serialized again on the way out. Double work on large results, no behaviour difference.
+
 ## Next steps, in order
 
 Each step says what to do, what "done" looks like, and what to write back here.
-
-### 1. Make it a repository and commit
-
-```bash
-cd pydantic-ai-scriptmode
-make all                      # must be green before the first commit
-git init -b main
-git add -A
-git status                    # confirm .venv/, .local/, __pycache__/ are absent
-git commit -m "ScriptMode: inert-plan script mode for Pydantic AI"
-```
-
-Done when `git log` shows one commit and `git status` is clean. Do not add a remote; the user
-decides where it lives. Record the commit hash under "Where things stand".
-
-### 2. Whole-package code review
-
-Run `code-review` on the working tree (or `mattpocock-skills:code-review`). There is no diff to
-review, so point it at the package: `pydantic_ai_scriptmode/` and `tests/`. Order the findings by
-these candidates first, then whatever else it raises:
-
-1. `_toolset.py` `call_tool`: length and whether the three retry messages should be one helper.
-2. `_expr.py` `_call_builtin`: whether every builtin charges the `NodeBudget` consistently
-   (`sorted`, `zip`, `enumerate` build lists; `range` is bounded by what?).
-3. `_execute.py` `Runner.schedule`: the cancel-on-escape decision above. Read how
-   `pydantic_ai_harness/code_mode/` and `HandleDeferredToolCalls` resume after `ApprovalRequired`
-   before deciding. If cancelling loses work the resume would have reused, drop the `finally`.
-4. `_compile.py` `is_tool_call`: the forgot-`await` heuristic misfires on a call to a name defined
-   later in the script. Decide if that matters; it only changes which rejection kind fires.
-
-Fix what is clear, one commit per fix, each followed by `make all`. Anything you decide not to fix
-goes in a "Known and accepted" list under this section. Done when the review has no open findings.
 
 ### 3. First real-model trial
 
@@ -126,18 +146,20 @@ Purpose: tune the `run_script` description in `_toolset.py` and the teaching cop
 `_teaching.py` from what a model actually gets wrong. The test suite uses only `TestModel` and
 `FunctionModel`; keep it that way. The trial is a scratch script, not a test.
 
-Setup:
+Setup, already written: `.local/trial.py` (git-ignored) builds an `Agent` with `ScriptMode` over
+four tools (`list_issues` returns a list, `close_issue` takes an item, `lookup_assignee` fails half
+the time, `repo_summary` is untyped) and runs four tasks: fan-out, guard, error branch, and one
+impossible with the folded tools (`unknown_tool`). It writes `.local/trial-transcript.md` with
+every script, every retry message, and a count of retry headlines by frequency.
 
-- Write `.local/trial.py` (git-ignored). Build an `Agent` with `ScriptMode` over three or four
-  small tools that make the shapes interesting: one that returns a list, one that takes an item
-  from that list, one that can fail, one untyped. The README "Usage" example is a fine start.
-- Provider and model come from the environment. Do not write a key into any file in the workspace;
-  use the provider's usual env var and note in this file which provider was used, not the key.
-- Give it a handful of tasks that need a fan-out, a guard, an error branch, and one that is
-  impossible with the folded tools (to see how it handles `unknown_tool`).
+```bash
+SCRIPTMODE_TRIAL_MODEL=<provider:model> uv run python .local/trial.py
+```
 
-Capture, for each task: the first script the model wrote, every retry message it received, how
-many turns to success. Put the raw transcript in `.local/`, and the findings here:
+The provider's usual env var must hold the key. Do not write a key into any file in the
+workspace; note here which provider and model were used, not the key.
+
+Then record the findings here:
 
 - Which rejection kinds fired, in order of frequency.
 - For each, whether the copy got the model to the right spelling on the next turn. Rewrite the
@@ -150,9 +172,9 @@ rest. Commit as "Tune run_script description and teaching copy from first trial"
 
 ### 4. Keep CONTEXT.md current
 
-After steps 2 and 3, grep the diff for nouns not in the glossary. Either rename to a glossary term
-or add the term with an "Avoid" line. Use `mattpocock-skills:domain-modeling`. This session
-introduced no new vocabulary.
+After step 3, grep the diff for nouns not in the glossary. Either rename to a glossary term or add
+the term with an "Avoid" line. Use `mattpocock-skills:domain-modeling`. Checked after step 2:
+the review commits use only glossary terms (dispatch, fan-out, item, record); no change needed.
 
 ### 5. Deferred backlog
 
@@ -189,7 +211,6 @@ test run needs bounding.
 
 Call these with the Skill tool at the step named.
 
-- `code-review` (or `mattpocock-skills:code-review`): step 2, before any fix commits.
 - `mattpocock-skills:writing-for-agents`: step 3, when editing the `run_script` description or
   the teaching copy; both are agent-facing prose.
 - `mattpocock-skills:domain-modeling`: step 4, and before any ADR in step 5.
