@@ -111,7 +111,7 @@ and `list.count`, and `dict.get`/`keys`/`values`/`items`. Every value stays JSON
 | --- | --- | --- |
 | `max_steps` | 20 | steps in one plan |
 | `max_items_per_fanout` | 100 | the literal bound a fan-out may declare |
-| `max_total_calls` | 200 | worst-case calls in one plan: every fan-out at its declared maximum |
+| `max_total_calls` | 500 | worst-case calls in one plan: every fan-out at its declared maximum |
 | `max_concurrency` | 5 | calls in flight at once, across steps and fan-out items |
 | `max_expression_nodes` | 100,000 | evaluation budget shared by every expression in one execution |
 | `max_result_bytes` | 10 MiB | size of one call's JSON-encoded result before it is refused |

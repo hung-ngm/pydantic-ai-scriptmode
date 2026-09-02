@@ -18,11 +18,16 @@ OnError = Literal['fail', 'skip']
 
 @dataclass(frozen=True)
 class Limits:
-    """The hard bounds a plan must satisfy before and during execution. Defaults follow callscript."""
+    """The hard bounds a plan must satisfy before and during execution.
+
+    Defaults follow callscript except `max_total_calls`, raised from 200 so that two fan-outs at the
+    per-fan-out limit plus a call fit: models slice at the limit, and 201 against 200 was the most
+    common retry in the first real-model trial.
+    """
 
     max_steps: int = 20
     max_items_per_fanout: int = 100
-    max_total_calls: int = 200
+    max_total_calls: int = 500
     """Worst-case calls in one plan: every fan-out at its declared maximum."""
     max_concurrency: int = 5
     """Calls in flight at once, across steps and fan-out items."""

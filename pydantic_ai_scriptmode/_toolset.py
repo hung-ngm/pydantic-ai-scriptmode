@@ -47,7 +47,8 @@ Run a short script of tool calls in one round trip.
 Write a Python-subset script. It is compiled to a plan of steps and executed against the tools \
 listed below; it is never run as Python, so only the shapes in this table are accepted:
 
-- `# one-line intent` as the first line (or a docstring)
+- a Python `#` comment stating the intent as the first line (never `//` or quotes; a docstring \
+also works)
 - `x = await tool(arg=value, ...)` calls a tool; arguments are keyword-only
 - `x = <expression>` derives a value from earlier steps (pure: literals, f-strings, indexing, \
 slicing, `.key` on dicts, comparisons, arithmetic, comprehensions, `len`/`sum`/`min`/`max`/`sorted`/\
@@ -66,6 +67,18 @@ fan-out's N counts toward the total-calls limit whether or not the items exist
 Not available: `while`, unbounded `for`, `def`, `class`, `import`, `print`, augmented assignment, \
 nested awaits inside expressions, positional tool arguments.
 
+Example, for tools `list_items() -> list[Item]` and `archive(item_id: str) -> str`:
+
+```python
+# Archive every stale item
+items = await list_items()
+stale = [i for i in items if i.stale]
+if not stale:
+    return {'archived': 0}
+done = [await archive(item_id=i.id, _on_error='skip') for i in stale[:20]]
+return {'archived': len([d for d in done if d])}
+```
+
 Independent steps run concurrently. Results settle per step and are kept for this conversation: if \
 a script fails, a corrected script reuses the steps that already settled unchanged, so do not \
 re-run work the error message lists as settled.\
@@ -75,7 +88,8 @@ re-run work the error message lists as settled.\
 def _limits_paragraph(limits: Limits) -> str:
     return (
         f'Limits: at most {limits.max_steps} steps, {limits.max_items_per_fanout} items per fan-out, '
-        f'{limits.max_total_calls} tool calls in total, {limits.max_concurrency} calls in flight at once.'
+        f'{limits.max_total_calls} tool calls in total counting every fan-out at its bound N, '
+        f'{limits.max_concurrency} calls in flight at once.'
     )
 
 
