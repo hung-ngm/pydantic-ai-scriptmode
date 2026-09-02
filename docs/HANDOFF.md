@@ -8,21 +8,26 @@ session; do not write handoff copies elsewhere (no temp-directory copies, no pro
 
 ## Where things stand
 
-The package is complete, reviewed, and committed. `make all` (ruff format, ruff check, pyright
-strict, pytest) is green: 145 passed, no xfails, no skips. `git log` on `main`, newest first:
+The package is complete, reviewed, committed, and pushed. `make all` (ruff format, ruff check,
+pyright strict, pytest) is green: 145 passed, no xfails, no skips. `git log` on `main`, newest
+first (handoff-only commits omitted):
 
-- `02f2f43` Validator refuses a hand-built fan-out with no bound
+- `84047d8` Validator refuses a hand-built fan-out with no bound
 - `69963e5` Unresolved approval inside a script is a UserError; dispatch is a class
 - `d52d178` Fan-out waits for every item; skip is per item; no function-valued steps
 - `9a95a74` Charge sequence growth, catch OverflowError, refuse str.format
 - `79005aa` ScriptMode: inert-plan script mode for Pydantic AI
 
-Remote: `origin` is the private repo `https://github.com/hung-ngm/pydantic-ai-scriptmode`, `main` tracks it. The working tree is clean. Step 3 (real-model trial) is blocked only on a provider key:
-none of the usual `*_API_KEY` variables was set in this session's environment.
+Remote: `origin` is the private repo `https://github.com/hung-ngm/pydantic-ai-scriptmode`;
+`main` tracks `origin/main` and is in sync. Working tree clean. Commit straight to `main` and push
+after each commit; no force-push, no other branches yet.
+
+The one open item is step 3, the real-model trial, blocked only on a provider key: none of the
+usual `*_API_KEY` variables was set in the last session's environment.
 
 Session history, newest first:
 
-- 2026-09-03: steps 1, 2, and 4 done. First commit, then a whole-package review. The
+- 2026-09-03: steps 1, 2, and 4 done, repo pushed. First commit, then a whole-package review. The
   `code-review` skill's multi-agent run hit the session rate limit mid-verification, so its merged
   candidate list was verified by hand in-line; every confirmed finding is a commit above. Wrote
   `.local/trial.py` for step 3. See "Review findings" below.
@@ -79,7 +84,8 @@ helper from the learning phase, both redundant now and safe to delete.
   same name, or `pass`). The error is bound to the `as` name as its message string.
 - Anonymous steps are named `_callN` / `_guardN` by position.
 - Tool exceptions, `ModelRetry`, argument `ValidationError`, and `ToolDenied` all become `CallError`
-  so the script's error branch can catch them. `ApprovalRequired` / `CallDeferred` propagate.
+  so the script's error branch can catch them. `ApprovalRequired` / `CallDeferred` are handled
+  inline or become `UserError`; see the `_Dispatcher` entry below.
 - Untyped tools have `return_schema == {}` (not `None`) in pydantic-ai 2.37, so the "no return
   schema" warning checks falsiness.
 - The record is saved even when the run fails, so a retry reuses settled steps. The retry message
@@ -136,6 +142,17 @@ Known and accepted:
 - `_Dispatcher.__call__` calls `to_jsonable_python` on each result and the tool return is
   serialized again on the way out. Double work on large results, no behaviour difference.
 
+## Next session: start here
+
+1. `cd pydantic-ai-scriptmode && git pull && make all`. Expect 145 passed.
+2. Check for a key: `env | grep -c API_KEY`. If zero, ask the user which provider to use and to
+   export the key in the shell (`! export ...` in the prompt), then continue with step 3. If the
+   user has no key to hand, skip to step 5 and come back.
+3. Do step 3 below end to end, including the doc write-back, before touching anything else. It is
+   the only source of evidence about what the model actually gets wrong; every later change to the
+   description or teaching copy should cite it.
+4. Push after every commit. Update this file at the end of the session (not a temp copy).
+
 ## Next steps, in order
 
 Each step says what to do, what "done" looks like, and what to write back here.
@@ -159,16 +176,31 @@ SCRIPTMODE_TRIAL_MODEL=<provider:model> uv run python .local/trial.py
 The provider's usual env var must hold the key. Do not write a key into any file in the
 workspace; note here which provider and model were used, not the key.
 
-Then record the findings here:
+Plan for the session:
 
-- Which rejection kinds fired, in order of frequency.
-- For each, whether the copy got the model to the right spelling on the next turn. Rewrite the
-  ones that did not. A template change needs no test change unless a test asserts on its text.
-- What the description failed to teach up front. Change the description and the README together;
-  the README is the reference when they disagree.
+1. Run the trial once as is. If the model is `pydantic_ai.models.ALLOW_MODEL_REQUESTS`-blocked,
+   that is `tests/conftest.py` leaking; the trial does not import it, so it should not happen.
+2. Read `.local/trial-transcript.md` top to bottom before changing anything. Classify every retry
+   by rejection kind (the headline of each retry names it in prose; map back to `RejectionKind`
+   in `_teaching.py`).
+3. For each kind that fired: did the next script fix that line? If yes, the copy works, leave it.
+   If no, rewrite that one template under `mattpocock-skills:writing-for-agents`, then rerun only
+   that task (edit `TASKS` in `trial.py` to one entry). A template change needs no test change
+   unless a test asserts on its text; `grep -n` the tests for a phrase before changing it.
+4. Anything the model got wrong on its *first* script is a description gap, not a copy gap. Fix
+   `_DESCRIPTION_HEAD` in `_toolset.py` and the README grammar table together; the README is the
+   reference when they disagree. Rerun all four tasks after a description change.
+5. Watch specifically for: (a) `reuse after success` giving a stale answer when a task repeats a
+   step name across runs (the four tasks share one agent, so the record is shared; if the guard
+   task reuses `issues` from the fan-out task, that is the stale read the "Known and accepted"
+   entry warned about, and the fix is to reuse only from an `error` record); (b) the model writing
+   `for` without a slice, and whether `unbounded_for` copy gets it to `[:N]` in one turn; (c) the
+   impossible task: it should stop after one `unknown_tool` retry, not keep trying.
+6. Record here: provider and model used; kinds by frequency; which templates changed and why;
+   which description lines changed and why; turns-to-success per task before and after.
 
 Done when the model succeeds in one turn on the ordinary tasks and recovers in one retry on the
-rest. Commit as "Tune run_script description and teaching copy from first trial".
+rest. Commit as "Tune run_script description and teaching copy from first trial", then push.
 
 ### 4. Keep CONTEXT.md current
 
@@ -178,13 +210,23 @@ the review commits use only glossary terms (dispatch, fan-out, item, record); no
 
 ### 5. Deferred backlog
 
-In the order the design ranked them. Each is an ADR before code.
+In the order the design ranked them. Each is an ADR before code: `docs/adr/000N-<slug>.md`, front
+matter `status: proposed`, one paragraph of decision and one of cost, in the voice of `0002`. Write
+the ADR, run `mattpocock-skills:grilling` on it if the choice is not obvious, get the user's yes,
+then `mattpocock-skills:tdd` for the code. One commit for the ADR, then commits per behaviour.
 
 1. `dynamic_catalog`: rebuild the catalog per run so tools added mid-conversation are foldable.
+   Smallest item; a good first ADR. Today `get_tools` already recomputes the fold each call, so
+   the question is only whether the description must be stable within a run for prompt caching
+   (harness `CodeMode` has a `dynamic_catalog` flag for exactly this; read it first).
 2. Suspend and detach: let a plan pause at an approval and resume from its record without
-   re-dispatching settled steps (this is where the schedule cancel question is finally decided).
+   re-dispatching settled steps. Needs: the record saved before the `UserError`, a `suspended`
+   run status (callscript has one, `execute.ts` line ~71), and a way for `run_script` to be
+   re-entered with the approval bound to the nested call id. This replaces the `UserError` path
+   in `_Dispatcher`.
 3. Script-as-tool: expose a saved plan as a native tool.
 4. Durable `RecordStore`: file or SQLite; the protocol already supports it (README example).
+   Now cheap to do safely because records can no longer hold closures.
 5. JS surface: a second front end compiling to the same `Plan`.
 6. Upstreaming to `pydantic-ai-harness`: follow `agent_docs/capability-authoring.md` there.
 
@@ -214,8 +256,9 @@ Call these with the Skill tool at the step named.
 - `mattpocock-skills:writing-for-agents`: step 3, when editing the `run_script` description or
   the teaching copy; both are agent-facing prose.
 - `mattpocock-skills:domain-modeling`: step 4, and before any ADR in step 5.
-- `mattpocock-skills:tdd`: any engine behaviour change from step 2 or 5.
-- `mattpocock-skills:grilling`: only if a design fork appears that the two ADRs do not cover.
-- `mattpocock-skills:handoff` is not registered in this session's skill list even though it is
-  installed under `~/.claude/plugins/cache/claude-plugins-official/mattpocock-skills/`; its
-  instruction is to write the doc to a temp dir, which the user has overridden: update this file.
+- `mattpocock-skills:grilling`: on a step 5 ADR whose choice is not obvious, before the user's yes.
+- `mattpocock-skills:tdd`: any engine behaviour change from step 3 or 5.
+- `code-review` (or `mattpocock-skills:code-review`): before pushing a step 5 change. Run it at
+  `medium`, not `high`: the `high` multi-agent run exhausted the session limit last time.
+- `mattpocock-skills:handoff`: end of session. Its instruction is to write to a temp dir; the user
+  has overridden that: update this file in place.
