@@ -1,0 +1,92 @@
+[build-system]
+requires = ['hatchling']
+build-backend = 'hatchling.build'
+
+[project]
+name = 'pydantic-ai-scriptmode'
+version = '0.1.0'
+description = 'ScriptMode: sandbox-free code mode for Pydantic AI, scripts compile to an inert plan'
+readme = 'README.md'
+requires-python = '>=3.10'
+license = 'MIT'
+classifiers = [
+    'Development Status :: 3 - Alpha',
+    'Intended Audience :: Developers',
+    'License :: OSI Approved :: MIT License',
+    'Programming Language :: Python :: 3',
+    'Programming Language :: Python :: 3.10',
+    'Programming Language :: Python :: 3.11',
+    'Programming Language :: Python :: 3.12',
+    'Programming Language :: Python :: 3.13',
+    'Topic :: Software Development :: Libraries',
+    'Typing :: Typed',
+]
+dependencies = [
+    # `ToolManager.handle_call(wrap_validation_errors=False)`, `ToolDefinition.render_signature`,
+    # `matches_tool_selector`, and `AbstractCapability` ordering all exist by this release.
+    'pydantic-ai-slim>=2.36.0',
+]
+
+[dependency-groups]
+dev = [
+    'pytest>=9.0.0',
+    'anyio>=4.11.0',
+    'pytest-anyio',
+    'coverage>=7.10.7',
+    'inline-snapshot>=0.32.5',
+]
+lint = [
+    'ruff>=0.14',
+    'pyright>=1.1.408',
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ['pydantic_ai_scriptmode']
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ['.local']
+target-version = 'py310'
+
+[tool.ruff.lint]
+extend-select = ['Q', 'RUF100', 'C90', 'UP', 'I', 'D', 'TID251', 'PLC0415']
+
+[tool.ruff.lint.per-file-ignores]
+'tests/**/*.py' = ['D']
+
+[tool.ruff.lint.flake8-quotes]
+inline-quotes = 'single'
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
+
+[tool.ruff.lint.pydocstyle]
+convention = 'google'
+
+[tool.ruff.format]
+docstring-code-format = false
+quote-style = 'single'
+
+[tool.pyright]
+venvPath = '.'
+venv = '.venv'
+pythonVersion = '3.10'
+typeCheckingMode = 'strict'
+exclude = ['.venv*', '.local']
+executionEnvironments = [
+    { root = 'tests', reportPrivateUsage = false, reportUnusedFunction = false },
+]
+
+[tool.pytest.ini_options]
+testpaths = ['tests']
+xfail_strict = true
+filterwarnings = ['error']
+anyio_mode = 'auto'
+
+[tool.coverage.run]
+branch = true
+source = ['pydantic_ai_scriptmode', 'tests']
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = ['pragma: no cover', 'assert_never', 'if TYPE_CHECKING:']

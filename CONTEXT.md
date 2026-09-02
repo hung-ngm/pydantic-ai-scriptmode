@@ -1,0 +1,75 @@
+# ScriptMode
+
+A Pydantic AI capability where the model authors one script of tool calls that is compiled
+into an inert plan and executed against the agent's tools, with no code ever running.
+Exists so agents get Code Mode's one-round-trip batching without a sandbox.
+
+## Language
+
+**Script**:
+The text the model authors in one `run_script` call. It is parsed and compiled, never executed.
+_Avoid_: code, program, snippet
+
+**Plan**:
+The inert, serializable data a script compiles to. It is what gets validated, stored, and executed.
+_Avoid_: script (when meaning the compiled form), workflow, DAG
+
+**Step**:
+One unit of a plan, identified by name, that other steps reference by that name.
+_Avoid_: node, task, instruction
+
+**Call**:
+A step that invokes one folded tool with arguments.
+_Avoid_: invocation, tool call (reserved for the agent-level concept)
+
+**Derivation**:
+A step that computes a value from earlier steps with a pure expression.
+_Avoid_: let, assignment, transform
+
+**Guard**:
+A step that ends the run early with a value when its condition holds.
+_Avoid_: early return, exit, break
+
+**Fan-out**:
+A call dispatched once per element of a list, bounded by a declared maximum.
+_Avoid_: loop, batch, map step
+
+**Expression**:
+A pure, side-effect-free fragment of the authoring language used inside steps.
+_Avoid_: formula, code
+
+**Folded tool**:
+An agent tool that has been hidden from the model and made callable from a script instead.
+_Avoid_: sandboxed tool, mounted tool, wrapped tool
+
+**Native tool**:
+An agent tool the model still calls directly, outside any script.
+_Avoid_: unfolded tool, raw tool
+
+**Catalog**:
+The rendered signatures of the folded tools that teach the model what a script may call.
+_Avoid_: tool cards, tool list, manifest
+
+**Record**:
+The serializable outcome of executing a plan: the settled value or error of each step.
+_Avoid_: state, session, history
+
+**Limits**:
+The hard bounds a plan must satisfy before and during execution.
+_Avoid_: budget, quota, config
+
+**Intent**:
+The one-line purpose the model states first in a script, kept on the plan for audit and approval.
+_Avoid_: description, title, comment
+
+**Error branch**:
+The fallback expression a call settles to when it fails, written as `try`/`except` in a script.
+_Avoid_: catch, handler, recovery
+
+**Dispatch**:
+The one function the engine is given to perform a call; the only way a plan reaches a tool.
+_Avoid_: executor, handler, backend
+
+**Teaching copy**:
+The message for one rejection kind that tells the model the right spelling, not only what was wrong.
+_Avoid_: error message, hint
