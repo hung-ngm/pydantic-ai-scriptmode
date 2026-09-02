@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pydantic_ai_scriptmode._compile import compile_script
-from pydantic_ai_scriptmode._plan import Limits
+from pydantic_ai_scriptmode._plan import CallStep, Limits, Plan
 from pydantic_ai_scriptmode._validate import ToolSignature, validate_plan
 
 TOOLS = {
@@ -65,3 +65,8 @@ class TestValidate:
 
     def test_input_is_always_bound(self):
         assert kinds('x = input.value') == []
+
+    def test_hand_built_fanout_needs_a_bound(self):
+        step = CallStep(name='x', tool='close_issue', args={'repo': "'r'", 'number': 'i'}, each='[1, 2]', each_var='i')
+        plan = Plan(intent='t', steps=(step,))
+        assert [i.kind for i in validate_plan(plan, tools=TOOLS, limits=Limits())] == ['unbounded_for']

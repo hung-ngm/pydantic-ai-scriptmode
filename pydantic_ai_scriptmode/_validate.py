@@ -82,6 +82,9 @@ def validate_plan(plan: Plan, *, tools: Mapping[str, ToolSignature], limits: Lim
                 if name not in defined and name not in BUILTIN_FUNCTIONS:
                     issues.append(issue('unknown_function', step.line, name=name, step=step.name))
         if isinstance(step, CallStep):
+            if step.each is not None and step.max_items is None:
+                # The compiler never builds this; a hand-built plan can, and it would run unbounded.
+                issues.append(issue('unbounded_for', step.line, iter=step.each))
             worst_case_calls += step.max_items if step.max_items is not None else 1
             if step.max_items is not None and step.max_items > limits.max_items_per_fanout:
                 issues.append(
