@@ -54,7 +54,8 @@ slicing, `.key` on dicts, comparisons, arithmetic, comprehensions, `len`/`sum`/`
 `zip`/`enumerate`/`any`/`all`, `json.dumps`/`json.loads`, non-mutating `str`/`list`/`dict` methods)
 - `if <condition>: return <value>` ends the run early with that value
 - `x = [await tool(arg=i.field) for i in items[:N] if <filter>]` calls once per item, bounded by a \
-literal slice `[:N]` or a literal list
+literal slice `[:N]` or a literal list. Pick N as the most items you expect, not the limit: every \
+fan-out's N counts toward the total-calls limit whether or not the items exist
 - `a, b = await asyncio.gather(tool_a(...), tool_b(...))` runs calls concurrently; sequential \
 `await`s run in order
 - `try: x = await tool(...)` / `except Exception as e: x = <fallback>` handles a failed call; \

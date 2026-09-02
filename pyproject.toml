@@ -39,6 +39,10 @@ lint = [
     'ruff>=0.14',
     'pyright>=1.1.408',
 ]
+examples = [
+    'pydantic-ai-slim[anthropic]>=2.36.0',
+    'python-dotenv>=1.0',
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ['pydantic_ai_scriptmode']
