@@ -11,6 +11,7 @@ from pydantic_ai.exceptions import ApprovalRequired, UnexpectedModelBehavior, Us
 from pydantic_ai.messages import (
     InstructionPart,
     ModelMessage,
+    ModelRequest,
     ModelResponse,
     RetryPromptPart,
     TextPart,
@@ -366,3 +367,22 @@ class TestDynamicCatalog:
         rebuilt = await toolset.for_run_step(ctx)
         assert isinstance(rebuilt, ScriptModeToolset) and rebuilt is not toolset
         assert rebuilt._last_catalog == stashed  # pyright: ignore[reportPrivateUsage]
+
+    async def test_catalog_reaches_the_model_through_agent(self):
+        agent, _ = build_agent(dynamic_catalog=True)
+        model = await describe(agent)
+        assert model.last_model_request_parameters is not None
+        assert 'async def list_issues' not in (model.last_model_request_parameters.function_tools[0].description or '')
+        result = await agent.run('go', model=model)
+        request = result.all_messages()[0]
+        assert isinstance(request, ModelRequest)
+        assert 'async def list_issues(*, repo: str)' in (request.instructions or '')
+
+    async def test_for_run_isolates_announcements_when_on_and_is_identity_when_off(self):
+        on = ScriptMode[None](dynamic_catalog=True)
+        on._announced_tools.add('weather')  # pyright: ignore[reportPrivateUsage]
+        fresh = await on.for_run(run_context())
+        assert fresh is not on and isinstance(fresh, ScriptMode)
+        assert fresh._announced_tools == set()  # pyright: ignore[reportPrivateUsage]
+        off = ScriptMode[None]()
+        assert await off.for_run(run_context()) is off

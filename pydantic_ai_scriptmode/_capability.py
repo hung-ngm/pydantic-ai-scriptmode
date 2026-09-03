@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import KW_ONLY, dataclass, field
+from dataclasses import KW_ONLY, dataclass, field, replace
 
-from pydantic_ai import AbstractToolset
+from pydantic_ai import AbstractToolset, RunContext
 from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering, ToolSearch
 from pydantic_ai.tools import AgentDepsT, ToolSelector
 
@@ -34,6 +34,18 @@ class ScriptMode(AbstractCapability[AgentDepsT]):
     max_retries: int = 3
     """Retries for `run_script` itself. Compile, validation, and uncaught runtime errors count."""
 
+    dynamic_catalog: bool = False
+    """Keep the `run_script` description cache-stable while the folded toolset grows.
+
+    By default the folded tools' signatures are rendered into the `run_script` description, which
+    providers key their prompt cache on; a tool revealed mid-run by `ToolSearch` rewrites it and
+    busts the cache from that point. When `True` the description keeps only the static prose and
+    the limits, the catalog moves into the system instructions as a dynamic `InstructionPart`
+    (placed after the cache breakpoint by Anthropic and Bedrock), and each discovery is announced
+    with a short `SystemPromptPart` so the model knows the new tools are callable. Pair it with
+    `ToolSearch`; with a fixed toolset the default keeps the system prompt shorter.
+    """
+
     _: KW_ONLY
 
     limits: Limits = field(default_factory=Limits)
@@ -41,6 +53,14 @@ class ScriptMode(AbstractCapability[AgentDepsT]):
 
     record_store: RecordStore = field(default_factory=InMemoryRecordStore)
     """Where settled steps live between `run_script` calls, keyed by `conversation_id`."""
+
+    _announced_tools: set[str] = field(default_factory=set[str], init=False, repr=False)
+
+    async def for_run(self, ctx: RunContext[AgentDepsT]) -> ScriptMode[AgentDepsT]:
+        """A fresh instance per run when announcing, so concurrent runs do not share what was announced."""
+        if not self.dynamic_catalog:
+            return self
+        return replace(self)
 
     def get_ordering(self) -> CapabilityOrdering:
         """Wrap around `ToolSearch` so `search_tools` stays native and discoveries can be folded."""
@@ -54,4 +74,5 @@ class ScriptMode(AbstractCapability[AgentDepsT]):
             max_retries=self.max_retries,
             limits=self.limits,
             record_store=self.record_store,
+            dynamic_catalog=self.dynamic_catalog,
         )
