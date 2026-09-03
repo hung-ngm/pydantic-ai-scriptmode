@@ -5,6 +5,7 @@ from pydantic_ai_scriptmode._compile import CompileError, compile_script
 from pydantic_ai_scriptmode._execute import CallError, Dispatch, ExecuteResult, Suspend, execute_plan
 from pydantic_ai_scriptmode._plan import CallStep, DeriveStep, GuardStep, Limits, Plan, Step
 from pydantic_ai_scriptmode._record import InMemoryRecordStore, ItemRecord, Record, RecordStore, StepRecord
+from pydantic_ai_scriptmode._script_tool import ScriptTool
 from pydantic_ai_scriptmode._teaching import Issue
 from pydantic_ai_scriptmode._toolset import RUN_SCRIPT_TOOL_NAME, ScriptModeToolset
 from pydantic_ai_scriptmode._validate import ToolSignature, ValidationError, validate_plan
@@ -27,6 +28,7 @@ __all__ = (
     'RecordStore',
     'ScriptMode',
     'ScriptModeToolset',
+    'ScriptTool',
     'Step',
     'StepRecord',
     'Suspend',
