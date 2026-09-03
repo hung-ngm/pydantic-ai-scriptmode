@@ -253,13 +253,86 @@ Known and accepted:
 
 1. `cd pydantic-ai-scriptmode && git pull && uv sync --all-groups && make all`. Expect 174 passed.
    `git status` will show the user's uncommitted Logfire work (see above); leave it.
-2. Backlog item 2, suspend and detach, starts with an ADR (`docs/adr/0004-suspend-and-detach.md`,
-   `status: proposed`) in the voice of `0002`, then `mattpocock-skills:grilling` on it, then the
-   user's yes before any code. Read callscript `execute.ts` around line 71 (`suspended` status) and
-   `_Dispatcher` in `_toolset.py` (the `UserError` path it replaces) first.
-3. When running `code-review`, do not chain the commit after it or after `make all` without
-   checking the exit status; the pattern that works is
-   `make all > log && echo MAKE_OK || exit 1` before `git commit`.
+2. Backlog item 2, suspend and detach. ADR first, code only after the user's yes. Steps below.
+3. Process rule from this session: gate every commit on `make all` succeeding
+   (`make all > log && echo MAKE_OK || exit 1`, then `git commit`). Never chain a commit after a
+   grep of the output. Run `code-review` at `medium`; if it hits the rate limit, verify its
+   candidate list by hand as the last two sessions did.
+
+### Plan for item 2: suspend and detach
+
+Goal, in glossary terms: a call that needs an approval parks the run instead of failing it. The
+record keeps every step that settled, the run's status is `suspended`, and the next `run_script`
+resumes from the record with only the parked call re-dispatched, now approved. This replaces the
+`UserError` path in `_Dispatcher` for `ApprovalRequired`; `CallDeferred` (external execution) is
+out of scope unless the ADR argues otherwise.
+
+Read first, in this order, and do not restate them in the ADR:
+
+- `callscript/packages/callscript/src/execute.ts` lines 60 to 80 (`SuspendSignal` contract) and
+  505 to 615 (how suspensions are collected across concurrent steps, `suspendedResult`);
+  `types.ts` lines 360 to 490 (`ItemStatus`, `StepStatus`, `RunState.status`, `ExecuteResult`
+  union, `resolutions`, `maxSuspendAttempts`).
+- `pydantic_ai_scriptmode/_execute.py` (`ExecuteResult`, `Runner.settle`, the halt in
+  `Runner.schedule`) and `_record.py` (`StepStatus`, `RunStatus`, `reusable_steps`). Today a step
+  is one of `done`, `skipped`, `error`, `returned`; a run is `done`, `returned`, `error`.
+- `_toolset.py`: `_Dispatcher.__call__` (the `UserError` raise), `call_tool` (where the record is
+  loaded and saved), and `tests/test_script_mode.py::test_approval_is_resolved_inline_or_is_a_user_error`.
+- pydantic-ai 2.37 surfaces the mechanism needs, all verified this session:
+  `ApprovalRequired(metadata=...)` in `exceptions.py` line 168; the metadata returns as
+  `ctx.tool_call_metadata` when the agent re-runs the approved tool with
+  `ctx.tool_call_approved=True` (`tool_manager.py` lines 290 to 305); the nested
+  `ToolManager.handle_call(part, approved=..., metadata=...)` at line 1030 can mark one nested
+  call approved. `DeferredToolResults` and `Agent.run(deferred_tool_results=...)` are the user's
+  resume surface (`agent/__init__.py` line 1181).
+
+What the ADR (`docs/adr/0004-suspend-and-detach.md`, `status: proposed`, voice of `0002`) must
+decide. Give a recommendation for each; `mattpocock-skills:grilling` on the ADR before the user's yes:
+
+- Shape of the suspension. Recommended: `run_script` raises `ApprovalRequired` with metadata
+  holding the parked step names, their nested call ids and arguments, and the `_reason` if the
+  script gave one, so the approver sees what will run. The record is saved before raising with
+  run status `suspended` and the step status `suspended` (a new `StepStatus`, mirroring callscript;
+  a fan-out item can be `suspended` too).
+- Resume. Recommended: on the approved re-run, `call_tool` reads `ctx.tool_call_metadata`,
+  compiles the same script (the model does not write a new one; the agent re-issues the approved
+  `run_script` call with the same arguments), and `execute_plan` re-dispatches only the
+  `suspended` steps with `approved=True` on the nested `handle_call`. `reusable_steps` must treat
+  `suspended` as a re-entry point, not a reusable step. A denied approval settles the parked step
+  as an `error` that the script's error branch can catch, as `ToolDenied` does today.
+- Concurrency. A halt gates new launches only (see "Decisions"), so in-flight siblings settle
+  before the run parks; the record must hold them. Several steps may park in one run; the
+  metadata lists all of them and one approval resumes all (callscript collects `suspensions`
+  across steps). Decide whether partial approval is allowed; recommended no, for the first cut.
+- Retry budget. A suspension is not a model error: it must not consume `max_retries`, and the
+  retry message path (`_execution_retry`) must not fire. Also decide a `max_suspend_attempts`
+  guard like callscript's, so a tool that keeps asking cannot loop; recommended a `Limits` field.
+- Interaction with `HandleDeferredToolCalls`. Today it resolves approvals inline through the
+  nested manager, and that stays the fast path. The ADR says which wins when both are present;
+  recommended inline first, park only if nothing resolved it.
+- Teaching copy. The description gets one sentence: a call that needs approval pauses the script
+  and the same script continues once approved; do not rewrite it. `_teaching.py` may need no new
+  kind. `CONTEXT.md` needs **Suspension** (a parked call waiting on an approval; avoid: pause,
+  deferral, interrupt) and possibly **Resume**; run `mattpocock-skills:domain-modeling` on the ADR.
+
+Build order after the yes, `mattpocock-skills:tdd`, one commit per behaviour, in
+`tests/test_execute.py` for the engine and `tests/test_script_mode.py` for the adapter:
+
+1. Engine: a `Dispatch` may raise a new `Suspend` exception; the step settles `suspended`, the
+   run halts new launches, siblings settle, `ExecuteResult.status == 'suspended'` with the parked
+   step names. `reusable_steps` skips `suspended`.
+2. Engine: `execute_plan(..., resolutions=...)` re-dispatches parked steps with the resolution
+   passed to `Dispatch`, and everything else is reused from the record.
+3. Adapter: `_Dispatcher` turns `ApprovalRequired` into `Suspend` carrying the nested call part;
+   `call_tool` saves the record and raises `ApprovalRequired(metadata=...)` from `run_script`.
+4. Adapter: the approved re-run resumes through `ctx.tool_call_metadata`; denial settles the step
+   as an error. End-to-end tests with `Agent.run(deferred_tool_results=...)`, both approve and
+   deny, and one with a fan-out where one item parks.
+5. Copy: README ("How it works" gets one paragraph, options table if a limit was added), the
+   description sentence, the ADR marked `accepted`, this file.
+6. Trial: add a task to `examples/tutor.py` whose tool raises `ApprovalRequired` unless approved,
+   run with the key from `.env`, save the transcript as `.local/tutor-suspend-1.txt`, record the
+   result under "Trial findings". Then `code-review` at `medium`, then update this file.
 
 ## Next steps, in order
 
@@ -362,10 +435,7 @@ then `mattpocock-skills:tdd` for the code. One commit for the ADR, then commits 
 0. Bound through a derivation: done 2026-09-03 (`57517ff`).
 1. `dynamic_catalog`: done 2026-09-03 (`f52fe14` to `e2d9840`), ADR 0003.
 2. Suspend and detach: let a plan pause at an approval and resume from its record without
-   re-dispatching settled steps. Needs: the record saved before the `UserError`, a `suspended`
-   run status (callscript has one, `execute.ts` line ~71), and a way for `run_script` to be
-   re-entered with the approval bound to the nested call id. This replaces the `UserError` path
-   in `_Dispatcher`.
+   re-dispatching settled steps. Plan under "Next session"; ADR 0004 not yet written.
 3. Script-as-tool: expose a saved plan as a native tool.
 4. Durable `RecordStore`: file or SQLite; the protocol already supports it (README example).
    Now cheap to do safely because records can no longer hold closures.
@@ -398,7 +468,8 @@ Call these with the Skill tool at the step named.
 - `mattpocock-skills:writing-for-agents`: when editing the `run_script` description, the
   announcement sentence, or the teaching copy; all are agent-facing prose.
 - `mattpocock-skills:domain-modeling`: step 4, and before any ADR in step 5.
-- `mattpocock-skills:grilling`: on a step 5 ADR whose choice is not obvious, before the user's yes.
+- `mattpocock-skills:grilling`: on ADR 0004 before the user's yes; the suspension shape and the
+  resume path each have more than one defensible answer.
 - `mattpocock-skills:tdd`: any engine behaviour change from step 3 or 5.
 - `code-review` (or `mattpocock-skills:code-review`): before pushing a step 5 change. Run it at
   `medium`, not `high`: the `high` multi-agent run exhausted the session limit last time.
