@@ -331,11 +331,11 @@ class TestDynamicCatalog:
         ('upstream', 'expected_prefix'),
         [
             ('wrapped', ['wrapped']),
-            (InstructionPart(content='part'), [InstructionPart(content='part')]),
-            (['a', InstructionPart(content='b')], ['a', InstructionPart(content='b')]),
+            (InstructionPart(content='part'), ['part']),
+            (['a', InstructionPart(content='b')], ['a', 'b']),
         ],
     )
-    async def test_catalog_is_appended_to_upstream_instructions(self, upstream: Any, expected_prefix: list[Any]):
+    async def test_catalog_is_appended_to_upstream_instructions(self, upstream: Any, expected_prefix: list[str]):
         class Upstream(FunctionToolset[None]):
             async def get_instructions(self, ctx: RunContext[None]) -> Any:
                 return upstream
@@ -345,7 +345,8 @@ class TestDynamicCatalog:
         await toolset.get_tools(ctx)
         instructions = await toolset.get_instructions(ctx)
         assert isinstance(instructions, list)
-        assert instructions[:-1] == expected_prefix
+        # Upstream text arrives normalized to `InstructionPart`s; the catalog is appended last.
+        assert [p.content for p in instructions[:-1] if isinstance(p, InstructionPart)] == expected_prefix
         assert isinstance(instructions[-1], InstructionPart) and 'async def add' in instructions[-1].content
 
     async def test_no_instructions_when_off_or_empty(self):
@@ -520,7 +521,7 @@ class TestDiscoveryAnnouncement:
         """Relaying through the base class keeps the wrapped toolset's id on its own instruction parts."""
 
         class Upstream(FunctionToolset[None]):
-            async def get_instructions(self, ctx: RunContext[None]) -> str:
+            async def get_instructions(self, ctx: RunContext[None]) -> Any:
                 return 'crm rules'
 
         toolset = ScriptModeToolset(wrapped=Upstream([add], id='crm'), dynamic_catalog=True)
