@@ -468,7 +468,7 @@ class TestDiscoveryAnnouncement:
         await announce_local(ScriptMode[None](dynamic_catalog=True), ctx, result)
         assert announcements(ctx) == []
 
-    async def test_search_then_script_calls_the_revealed_tool(self):
+    async def test_search_then_script_calls_the_discovered_tool(self):
         """End to end: the model searches, is told the tool is callable, and calls it from a script."""
         descriptions: list[str] = []
         prompts: list[str] = []

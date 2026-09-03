@@ -50,6 +50,14 @@ _Avoid_: unfolded tool, raw tool
 The rendered signatures of the folded tools that teach the model what a script may call.
 _Avoid_: tool cards, tool list, manifest
 
+**Discovery**:
+A tool that `ToolSearch` makes available mid-run, so it is folded and enters the catalog from the next step.
+_Avoid_: reveal, unlock, lazy tool
+
+**Announcement**:
+The one system message that names newly discovered tools so the model knows a script may call them.
+_Avoid_: notification, hint, nudge
+
 **Record**:
 The serializable outcome of executing a plan: the settled value or error of each step.
 _Avoid_: state, session, history

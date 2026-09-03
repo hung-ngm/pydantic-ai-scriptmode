@@ -51,7 +51,7 @@ class ScriptMode(AbstractCapability[AgentDepsT]):
     """Keep the `run_script` description cache-stable while the folded toolset grows.
 
     By default the folded tools' signatures are rendered into the `run_script` description, which
-    providers key their prompt cache on; a tool revealed mid-run by `ToolSearch` rewrites it and
+    providers key their prompt cache on; a tool discovered mid-run by `ToolSearch` rewrites it and
     busts the cache from that point. When `True` the description keeps only the static prose and
     the limits, the catalog moves into the system instructions as a dynamic `InstructionPart`
     (placed after the cache breakpoint by Anthropic and Bedrock), and each discovery is announced
@@ -99,7 +99,7 @@ class ScriptMode(AbstractCapability[AgentDepsT]):
         args: ValidatedToolArgs,
         result: Any,
     ) -> Any:
-        """Announce the tools a local `search_tools` call revealed, when `dynamic_catalog` is on."""
+        """Announce the tools a local `search_tools` call discovered, when `dynamic_catalog` is on."""
         if self.dynamic_catalog and tool_def.tool_kind == 'tool-search':
             self._announce(ctx, _discovered_names(result))
         return result
@@ -111,7 +111,7 @@ class ScriptMode(AbstractCapability[AgentDepsT]):
         request_context: ModelRequestContext,
         response: ModelResponse,
     ) -> ModelResponse:
-        """Announce the tools a native (server-side) search revealed, when `dynamic_catalog` is on."""
+        """Announce the tools a native (server-side) search discovered, when `dynamic_catalog` is on."""
         if self.dynamic_catalog:
             for part in response.parts:
                 if isinstance(part, NativeToolSearchReturnPart):
