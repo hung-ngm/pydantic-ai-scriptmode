@@ -1,4 +1,4 @@
-# Handoff: pydantic-ai-scriptmode (backlog started; ADR 0003 awaits the user's yes)
+# Handoff: pydantic-ai-scriptmode (ADR 0003 accepted; next is building `dynamic_catalog`)
 
 Date: 2026-09-03
 Workspace: `/Users/hungng/Documents/AI/experiments/pydantic-experiments/`
@@ -30,11 +30,13 @@ Uncommitted, the user's own work in progress (do not touch, do not commit): Logf
 of `examples/tutor.py` (`logfire.configure`, `instrument_pydantic_ai`, four metrics per run) with
 `logfire>=4.41.0` added to the `examples` group in `pyproject.toml` and `uv.lock`.
 
-Steps 1 to 4 are done. Backlog item 0 is done. Item 1 has its ADR (`docs/adr/0003-dynamic-catalog.md`,
-`status: proposed`) and is waiting for the user's yes before code.
+Steps 1 to 4 are done. Backlog item 0 is done. Item 1, `dynamic_catalog`, has an accepted ADR
+(`docs/adr/0003-dynamic-catalog.md`) and no code yet. The next session builds it.
 
 Session history, newest first:
 
+- 2026-09-03 (latest, second part): the user accepted ADR 0003 and asked for this build plan
+  instead of starting the code. No code for item 1 exists yet.
 - 2026-09-03 (latest): backlog item 0 done by TDD (`57517ff`): the compiler keeps `bounds`, the
   literal bound of every derivation, and a fan-out over a bare name inherits it; a rebinding drops
   it. Tests include the exact script from `.local/tutor-compare-2.txt`. README grammar paragraph
@@ -179,20 +181,75 @@ Known and accepted:
 ## Next session: start here
 
 1. `cd pydantic-ai-scriptmode && git pull && uv sync --all-groups && make all`. Expect 150 passed.
-2. Get the user's yes (or changes) on `docs/adr/0003-dynamic-catalog.md`, then flip it to
-   `status: accepted` and build it with `mattpocock-skills:tdd`, mirroring
-   `pydantic-ai-harness/pydantic_ai_harness/code_mode/` (`_capability.py` lines 105 to 215,
-   `_toolset.py` lines 555 to 700, tests at `tests/code_mode/test_code_mode.py` line 2917 on).
-   Pieces: `dynamic_catalog` field on `ScriptMode` and `ScriptModeToolset`; `_last_catalog` stash
-   in `get_tools` and `get_instructions` returning an `InstructionPart(dynamic=True)`; `for_run` /
-   `for_run_step` copying the stash; `_announced_tools` on the capability with `for_run` returning
-   a copy; `after_tool_execute` and `after_model_request` enqueueing a `SystemPromptPart`. Then a
-   tutor run with the flag on. If the user says no, move to item 2.
-3. Any change to the description, the teaching copy, or `Limits` must be checked with
-   `uv run python examples/tutor.py` (needs `ANTHROPIC_API_KEY` in `.env`): all three tasks
-   should succeed in one turn with zero retries, as they do now. Compare against
-   `.local/tutor-run-5.txt`.
-4. Push after every commit. Update this file at the end of the session (not a temp copy).
+   `git status` will show the user's uncommitted Logfire work (see above); leave it.
+2. Build `dynamic_catalog` per ADR 0003 with `mattpocock-skills:tdd`, in the order below. Commit
+   per behaviour, push after each commit. Do not ask the user to re-approve; the ADR is accepted.
+3. After the code: `uv run python examples/tutor.py` with the flag on (add a
+   `SCRIPTMODE_DYNAMIC_CATALOG=1` env switch to the harness, keep the default off). All three tasks
+   should succeed in one turn with zero retries, as in `.local/tutor-run-5.txt`. Save the
+   transcript as `.local/tutor-dynamic-1.txt` and record the result under "Trial findings".
+4. Run `code-review` at `medium` before the last push. Update this file at the end.
+
+### Build plan for `dynamic_catalog` (ADR 0003)
+
+Mirror harness `CodeMode`; every piece below has a counterpart there. Reference lines:
+`pydantic-ai-harness/pydantic_ai_harness/code_mode/_capability.py` 105 to 215 (field docstring,
+`for_run`, the two hooks, `_announce_newly_discovered`, `_extract_discovered_names`),
+`_toolset.py` 555 to 700 (`_last_catalog`, `for_run_step`, `get_instructions`, the `get_tools`
+branch), and `tests/code_mode/test_code_mode.py` from line 2917 (class docstring lists the two
+surfaces; copy its test shapes, not its sandbox wording).
+
+Write the failing test first for each step, in `tests/test_script_mode.py` (a new class
+`TestDynamicCatalog` next to `TestToolsetDirect`; `build_agent` and `describe` there already give
+you an agent with `TestModel` and the rendered `run_script` description).
+
+1. Toolset field and description split. `ScriptModeToolset.dynamic_catalog: bool = False`.
+   In `get_tools`, when on: `description = '\n\n'.join([_DESCRIPTION_HEAD, _limits_paragraph(...)])`
+   plus one sentence saying the tools are listed in the system instructions; stash the catalog
+   (the `_FUNCTIONS_HEADER` and code blocks that `_description` builds today) in
+   `_last_catalog: str` (`init=False, repr=False`); when off, `_last_catalog = ''`. Split
+   `_description` into the static head and a `_catalog(callable_defs) -> str` so both paths
+   share the rendering. Tests: description drops `async def` signatures but keeps the head and
+   the limits sentence; default keeps the catalog in the description; `_last_catalog` empty when
+   off or when nothing is folded.
+2. `get_instructions`. Override on the toolset: call `self.wrapped.get_instructions(ctx)`; if the
+   stash is empty return upstream unchanged; else append `InstructionPart(content=..., dynamic=True)`
+   to a `None`, `str | InstructionPart`, or sequence upstream. Tests: the three upstream shapes;
+   `dynamic is True`; catalog reaches the model through `Agent` (check `TestModel`'s captured
+   `ModelRequest` instructions, not just the toolset call).
+3. Per-step state. Override `for_run_step` so a rebuilt wrapped toolset keeps `_last_catalog`
+   (harness copies it by hand after `replace`). `for_run` is inherited from `WrapperToolset` and
+   already returns a copy. Test: the harness one at line 3037 (`_ChangingToolset`).
+4. Capability field and per-run copy. `ScriptMode.dynamic_catalog: bool = False` after
+   `max_retries`, passed through `get_wrapper_toolset`; `_announced_tools: set[str]`
+   (`init=False, repr=False`); `for_run` returns `replace(self)` when on, `self` when off. Tests:
+   fresh set on `for_run` when on, identity when off.
+5. Announcements. `after_tool_execute` (when on and `tool_def.tool_kind == 'tool-search'`) and
+   `after_model_request` (when on, for each `NativeToolSearchReturnPart`) call
+   `_announce_newly_discovered`, which enqueues one `SystemPromptPart` naming the fresh tools and
+   remembers them. Copy `_extract_discovered_names` with its two lenient `TypedDict`s. Wording:
+   "New tools are now callable from `run_script`. Their signatures are in the catalog in the
+   system instructions: `a`, `b`." Tests: local path, native path, no repeat announcement, inert
+   when off, malformed return yields no announcement. Then one end-to-end test with
+   `capabilities=[ToolSearch(), ScriptMode(dynamic_catalog=True)]` and a `FunctionModel` that
+   searches, then writes a script calling the revealed tool (harness line 3246 is the model).
+6. Copy. README options table gets a `dynamic_catalog` row and one paragraph under "How it
+   works" saying when to turn it on (paired with `ToolSearch`) and why not by default. The
+   `unknown_tool` and `unknown_argument` teaching templates say "in the catalog", which is true
+   in both modes; leave them. `CONTEXT.md` needs no new term ("catalog" already covers it); run
+   `mattpocock-skills:domain-modeling` on the diff to confirm.
+
+Things to check while building, settled in the ADR or found while reading:
+
+- `ctx.enqueue` exists on `RunContext` in pydantic-ai 2.37 (`_run_context.py` line 492) and
+  `InstructionPart.dynamic` at `messages.py` line 1861. `NativeToolSearchReturnPart` is in
+  `pydantic_ai.messages`.
+- `get_instructions` receives only `ctx`, not the tools; that is why the stash lives on the
+  toolset and not on `_RunScriptTool`.
+- The stash is written by `get_tools` and read by `get_instructions` in the same step; if the
+  step is rebuilt in between, `for_run_step` must carry it (step 3).
+- `ToolSearch` already sits inside `ScriptMode` by `get_ordering`, so `search_tools` is native
+  and a revealed tool is folded on the next `get_tools`; nothing in the fold changes.
 
 ## Next steps, in order
 
@@ -276,9 +333,9 @@ the ADR, run `mattpocock-skills:grilling` on it if the choice is not obvious, ge
 then `mattpocock-skills:tdd` for the code. One commit for the ADR, then commits per behaviour.
 
 0. Bound through a derivation: done 2026-09-03 (`57517ff`).
-1. `dynamic_catalog`: ADR 0003 proposed 2026-09-03. The fold was already dynamic; the item is
-   cache placement of the catalog, mirroring harness `CodeMode` (instructions part plus
-   discovery announcement). See "Next session" for the build plan.
+1. `dynamic_catalog`: ADR 0003 accepted 2026-09-03, code not started. The fold was already
+   dynamic; the item is cache placement of the catalog, mirroring harness `CodeMode`
+   (instructions part plus discovery announcement). Build plan under "Next session".
 2. Suspend and detach: let a plan pause at an approval and resume from its record without
    re-dispatching settled steps. Needs: the record saved before the `UserError`, a `suspended`
    run status (callscript has one, `execute.ts` line ~71), and a way for `run_script` to be
@@ -313,8 +370,9 @@ test run needs bounding.
 
 Call these with the Skill tool at the step named.
 
-- `mattpocock-skills:writing-for-agents`: step 3, when editing the `run_script` description or
-  the teaching copy; both are agent-facing prose.
+- `mattpocock-skills:writing-for-agents`: when editing the `run_script` description, the
+  announcement sentence, or the teaching copy; all are agent-facing prose. Build plan steps 1
+  and 5 touch them.
 - `mattpocock-skills:domain-modeling`: step 4, and before any ADR in step 5.
 - `mattpocock-skills:grilling`: on a step 5 ADR whose choice is not obvious, before the user's yes.
 - `mattpocock-skills:tdd`: any engine behaviour change from step 3 or 5.

@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # `dynamic_catalog` moves the catalog out of the tool description, mirroring harness `CodeMode`
