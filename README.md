@@ -62,6 +62,15 @@ without Pydantic AI (see "Using the engine directly").
    and by a hash of its authored form. The `Record` is stored per conversation, even when the run
    fails, so a corrected script reuses the steps that already settled.
 
+The catalog of folded tools is rebuilt every step, so a tool revealed mid-run by `ToolSearch` is
+callable from the next script either way. By default the catalog is rendered into the `run_script`
+description, which providers key their prompt cache on, so each discovery rewrites the description
+and busts the cache from that point. `ScriptMode(dynamic_catalog=True)` keeps the description static
+and moves the catalog into the system instructions as a dynamic `InstructionPart`, which Anthropic
+and Bedrock place after the cache breakpoint; a discovery is announced with one system message
+naming the new tools. Turn it on when pairing `ScriptMode` with `ToolSearch`. With a fixed toolset
+the default keeps the system prompt shorter, which is why it is off. This mirrors harness `CodeMode`.
+
 ## What a script may contain
 
 | Statement | Compiles to |
@@ -105,6 +114,9 @@ and `list.count`, and `dict.get`/`keys`/`values`/`items`. Every value stays JSON
 - `record_store`: a `RecordStore`, below. Defaults to in-memory.
 - `max_retries`: retries for `run_script` itself (default 3). Compile errors, validation errors, and
   uncaught runtime errors all count.
+- `dynamic_catalog`: `False` by default. When `True`, the folded tools' signatures move out of the
+  `run_script` description into the system instructions as a dynamic `InstructionPart`, and each
+  tool revealed by `ToolSearch` is announced with a short system message. See "How it works".
 
 ### Limits
 

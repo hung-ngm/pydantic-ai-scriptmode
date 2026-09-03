@@ -5,7 +5,7 @@ Plain tool use pays a model round trip per call; a script pays one.
 
 Run:  uv run python examples/tutor.py [task ...]   (tasks: practice, reviews, impossible)
 Reads ANTHROPIC_API_KEY from `.env` via python-dotenv; a standard workspace key, not an identity-linked
-one. Override the model with SCRIPTMODE_TRIAL_MODEL.
+one. Override the model with SCRIPTMODE_TRIAL_MODEL; set SCRIPTMODE_DYNAMIC_CATALOG=1 to trial the catalog in instructions.
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from pydantic_ai_scriptmode import RUN_SCRIPT_TOOL_NAME, ScriptMode
 
 load_dotenv()
 MODEL = os.environ.get('SCRIPTMODE_TRIAL_MODEL', 'anthropic:claude-opus-5')
+DYNAMIC_CATALOG = os.environ.get('SCRIPTMODE_DYNAMIC_CATALOG', '') == '1'
 
 # -- the store -----------------------------------------------------------------------------------
 
@@ -123,7 +124,7 @@ script_agent: Agent[None, str] = Agent(
     MODEL,
     deps_type=type(None),
     toolsets=[tools],
-    capabilities=[ScriptMode[None]()],
+    capabilities=[ScriptMode[None](dynamic_catalog=DYNAMIC_CATALOG)],
     instructions=INSTRUCTIONS + ' Use run_script to do a whole task in one call.',
 )
 
