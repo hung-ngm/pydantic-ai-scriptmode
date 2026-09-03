@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from pydantic_ai import AbstractToolset, Agent, RunContext
+from pydantic_ai import AbstractToolset, Agent, RunContext, ToolDefinition
 from pydantic_ai.capabilities import HandleDeferredToolCalls, ToolSearch
 from pydantic_ai.exceptions import ApprovalRequired, UnexpectedModelBehavior, UserError
 from pydantic_ai.messages import (
@@ -13,7 +13,9 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    NativeToolSearchReturnPart,
     RetryPromptPart,
+    SystemPromptPart,
     TextPart,
     ToolCallPart,
     ToolReturnPart,
@@ -386,3 +388,81 @@ class TestDynamicCatalog:
         assert fresh._announced_tools == set()  # pyright: ignore[reportPrivateUsage]
         off = ScriptMode[None]()
         assert await off.for_run(run_context()) is off
+
+
+ANNOUNCED = (
+    'New tools are now callable from `run_script`. Their signatures are in the catalog in the system instructions'
+)
+
+
+def search_tool_def() -> ToolDefinition:
+    return ToolDefinition(name='search_tools', description='', parameters_json_schema={}, tool_kind='tool-search')
+
+
+async def announce_local(
+    cap: ScriptMode[None], ctx: RunContext[None], result: Any, tool_def: ToolDefinition | None = None
+):
+    await cap.after_tool_execute(
+        ctx,
+        call=ToolCallPart(tool_name='search_tools', args={}, tool_call_id='c1'),
+        tool_def=tool_def or search_tool_def(),
+        args={},
+        result=result,
+    )
+
+
+def announcements(ctx: RunContext[None]) -> list[str]:
+    """The text of every `SystemPromptPart` the capability enqueued."""
+    out: list[str] = []
+    for pending in ctx.pending_messages or []:
+        for message in pending.messages:
+            assert isinstance(message, ModelRequest)
+            for part in message.parts:
+                assert isinstance(part, SystemPromptPart)
+                out.append(part.content)
+    return out
+
+
+class TestDiscoveryAnnouncement:
+    async def test_local_search_return_is_announced_once(self):
+        cap = ScriptMode[None](dynamic_catalog=True)
+        ctx = run_context()
+        await announce_local(cap, ctx, {'discovered_tools': [{'name': 'weather'}, {'name': 'news'}]})
+        await announce_local(cap, ctx, {'discovered_tools': [{'name': 'weather'}]})
+        assert announcements(ctx) == [f'{ANNOUNCED}: `weather`, `news`.']
+
+    async def test_native_search_return_is_announced(self):
+        cap = ScriptMode[None](dynamic_catalog=True)
+        ctx = run_context()
+        response = ModelResponse(
+            parts=[
+                TextPart('hi'),
+                NativeToolSearchReturnPart(
+                    tool_name='tool_search', content={'discovered_tools': [{'name': 'weather'}]}, tool_call_id='c1'
+                ),
+            ]
+        )
+        await cap.after_model_request(ctx, request_context=None, response=response)  # pyright: ignore[reportArgumentType]
+        assert announcements(ctx) == [f'{ANNOUNCED}: `weather`.']
+
+    async def test_inert_when_off_or_not_a_search_tool(self):
+        ctx = run_context()
+        await announce_local(ScriptMode[None](), ctx, {'discovered_tools': [{'name': 'weather'}]})
+        plain = ToolDefinition(name='add', description='', parameters_json_schema={})
+        await announce_local(ScriptMode[None](dynamic_catalog=True), ctx, {'discovered_tools': [{'name': 'x'}]}, plain)
+        assert announcements(ctx) == []
+
+    @pytest.mark.parametrize(
+        'result',
+        [
+            'not a dict',
+            {},
+            {'discovered_tools': 'not a list'},
+            {'discovered_tools': []},
+            {'discovered_tools': ['s', {'name': 1}]},
+        ],
+    )
+    async def test_malformed_or_empty_return_is_not_announced(self, result: Any):
+        ctx = run_context()
+        await announce_local(ScriptMode[None](dynamic_catalog=True), ctx, result)
+        assert announcements(ctx) == []

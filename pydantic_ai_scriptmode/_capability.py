@@ -2,15 +2,28 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import KW_ONLY, dataclass, field, replace
+from typing import TYPE_CHECKING, Any
 
-from pydantic_ai import AbstractToolset, RunContext
+from pydantic import TypeAdapter, ValidationError
+from pydantic_ai import AbstractToolset, RunContext, ToolDefinition
 from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering, ToolSearch
+from pydantic_ai.messages import ModelResponse, NativeToolSearchReturnPart, SystemPromptPart, ToolCallPart
 from pydantic_ai.tools import AgentDepsT, ToolSelector
+from typing_extensions import TypedDict
 
 from pydantic_ai_scriptmode._plan import Limits
 from pydantic_ai_scriptmode._record import InMemoryRecordStore, RecordStore
 from pydantic_ai_scriptmode._toolset import ScriptModeToolset
+
+if TYPE_CHECKING:
+    from pydantic_ai.capabilities.abstract import ValidatedToolArgs
+    from pydantic_ai.models import ModelRequestContext
+
+_ANNOUNCEMENT = (
+    'New tools are now callable from `run_script`. Their signatures are in the catalog in the system instructions'
+)
 
 
 @dataclass
@@ -76,3 +89,72 @@ class ScriptMode(AbstractCapability[AgentDepsT]):
             record_store=self.record_store,
             dynamic_catalog=self.dynamic_catalog,
         )
+
+    async def after_tool_execute(
+        self,
+        ctx: RunContext[AgentDepsT],
+        *,
+        call: ToolCallPart,
+        tool_def: ToolDefinition,
+        args: ValidatedToolArgs,
+        result: Any,
+    ) -> Any:
+        """Announce the tools a local `search_tools` call revealed, when `dynamic_catalog` is on."""
+        if self.dynamic_catalog and tool_def.tool_kind == 'tool-search':
+            self._announce(ctx, _discovered_names(result))
+        return result
+
+    async def after_model_request(
+        self,
+        ctx: RunContext[AgentDepsT],
+        *,
+        request_context: ModelRequestContext,
+        response: ModelResponse,
+    ) -> ModelResponse:
+        """Announce the tools a native (server-side) search revealed, when `dynamic_catalog` is on."""
+        if self.dynamic_catalog:
+            for part in response.parts:
+                if isinstance(part, NativeToolSearchReturnPart):
+                    self._announce(ctx, _discovered_names(part.content))
+        return response
+
+    def _announce(self, ctx: RunContext[AgentDepsT], names: Sequence[str]) -> None:
+        """Enqueue one `SystemPromptPart` naming the tools not announced before in this run."""
+        fresh = [n for n in names if n not in self._announced_tools]
+        if not fresh:
+            return
+        self._announced_tools.update(fresh)
+        listing = ', '.join(f'`{n}`' for n in fresh)
+        # A mid-conversation `SystemPromptPart` renders inline on every provider, so it is cache-safe.
+        ctx.enqueue(SystemPromptPart(content=f'{_ANNOUNCEMENT}: {listing}.'))
+
+
+class _DiscoveredCatalog(TypedDict):
+    """Lenient view of a tool-search return: the entry list, items left unvalidated."""
+
+    discovered_tools: list[object]
+
+
+class _DiscoveredEntry(TypedDict):
+    """Lenient view of one discovered entry: only the name."""
+
+    name: str
+
+
+_CATALOG_ADAPTER = TypeAdapter(_DiscoveredCatalog)
+_ENTRY_ADAPTER = TypeAdapter(_DiscoveredEntry)
+
+
+def _discovered_names(content: object) -> list[str]:
+    """Tool names in a search return, local or native. Malformed input yields fewer names, never an error."""
+    try:
+        catalog = _CATALOG_ADAPTER.validate_python(content)
+    except ValidationError:
+        return []
+    names: list[str] = []
+    for entry in catalog['discovered_tools']:
+        try:
+            names.append(_ENTRY_ADAPTER.validate_python(entry)['name'])
+        except ValidationError:
+            continue
+    return names
