@@ -9,7 +9,7 @@ from dataclasses import dataclass, field, replace
 from typing import Annotated, Any
 
 from pydantic import Field, TypeAdapter, ValidationError
-from pydantic_ai import RunContext, ToolDefinition, WrapperToolset
+from pydantic_ai import AbstractToolset, RunContext, ToolDefinition, WrapperToolset
 from pydantic_ai.exceptions import ApprovalRequired, CallDeferred, ModelRetry, UserError
 from pydantic_ai.function_signature import FunctionSignature
 from pydantic_ai.messages import InstructionPart, ToolCallPart, ToolReturn, ToolReturnPart
@@ -268,6 +268,14 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
             wrapped_tools=wrapped_tools,
         )
         return result
+
+    async def for_run_step(self, ctx: RunContext[AgentDepsT]) -> AbstractToolset[AgentDepsT]:
+        """Rebuild around a changed wrapped toolset without losing the catalog stashed this step."""
+        rebuilt = await super().for_run_step(ctx)
+        if rebuilt is not self and isinstance(rebuilt, ScriptModeToolset):
+            rebuilt._last_catalog = self._last_catalog
+            rebuilt._warned_no_return_schema = self._warned_no_return_schema
+        return rebuilt
 
     async def get_instructions(
         self, ctx: RunContext[AgentDepsT]

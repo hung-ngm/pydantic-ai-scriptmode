@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import AbstractToolset, Agent, RunContext
 from pydantic_ai.capabilities import HandleDeferredToolCalls, ToolSearch
 from pydantic_ai.exceptions import ApprovalRequired, UnexpectedModelBehavior, UserError
 from pydantic_ai.messages import (
@@ -352,3 +352,17 @@ class TestDynamicCatalog:
             ctx = run_context()
             await toolset.get_tools(ctx)
             assert await toolset.get_instructions(ctx) is None
+
+    async def test_step_rebuild_keeps_the_stash(self):
+        class Changing(FunctionToolset[None]):
+            async def for_run_step(self, ctx: RunContext[None]) -> AbstractToolset[None]:
+                return Changing(list(self.tools.values()))
+
+        toolset = ScriptModeToolset(wrapped=Changing([add]), dynamic_catalog=True)
+        ctx = run_context()
+        await toolset.get_tools(ctx)
+        stashed = toolset._last_catalog  # pyright: ignore[reportPrivateUsage]
+        assert stashed
+        rebuilt = await toolset.for_run_step(ctx)
+        assert isinstance(rebuilt, ScriptModeToolset) and rebuilt is not toolset
+        assert rebuilt._last_catalog == stashed  # pyright: ignore[reportPrivateUsage]
