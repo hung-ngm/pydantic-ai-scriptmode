@@ -466,3 +466,45 @@ class TestDiscoveryAnnouncement:
         ctx = run_context()
         await announce_local(ScriptMode[None](dynamic_catalog=True), ctx, result)
         assert announcements(ctx) == []
+
+    async def test_search_then_script_calls_the_revealed_tool(self):
+        """End to end: the model searches, is told the tool is callable, and calls it from a script."""
+        descriptions: list[str] = []
+        prompts: list[str] = []
+
+        async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            descriptions.append(
+                next(t.description or '' for t in info.function_tools if t.name == RUN_SCRIPT_TOOL_NAME)
+            )
+            last = messages[-1]
+            assert isinstance(last, ModelRequest)
+            prompts.append(
+                '\n'.join(str(p.content) for p in last.parts if p.part_kind in ('system-prompt', 'user-prompt'))
+            )
+            if len(messages) == 1:
+                return ModelResponse(parts=[ToolCallPart('search_tools', {'queries': ['weather']}, tool_call_id='s1')])
+            if len(messages) == 3:
+                assert 'async def weather(*, city: str) -> str' in (last.instructions or '')
+                return ModelResponse(
+                    parts=[ToolCallPart(RUN_SCRIPT_TOOL_NAME, {'script': "w = await weather(city='Oslo')\nreturn w"})]
+                )
+            part = last.parts[-1]
+            assert isinstance(part, ToolReturnPart)
+            return ModelResponse(parts=[TextPart(str(part.content))])
+
+        agent = Agent(
+            FunctionModel(model),
+            deps_type=type(None),
+            capabilities=[ToolSearch[None](), ScriptMode[None](dynamic_catalog=True)],
+        )
+
+        @agent.tool_plain(defer_loading=True)
+        def weather(city: str) -> str:
+            """Get the weather."""
+            return f'sunny in {city}'
+
+        result = await agent.run('what is the weather in Oslo?')
+        assert result.output == "{'status': 'done', 'output': 'sunny in Oslo'}"
+        assert all('async def' not in d for d in descriptions)
+        assert len({d for d in descriptions}) == 1
+        assert '`weather`' in prompts[1]
