@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # A saved script becomes a script tool served by the same toolset, with its own record
