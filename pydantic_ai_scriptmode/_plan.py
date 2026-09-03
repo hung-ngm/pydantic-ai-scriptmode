@@ -35,6 +35,8 @@ class Limits:
     """Evaluation budget shared by every expression in one execution."""
     max_result_bytes: int = 10 * 1024 * 1024
     """Size of one call's JSON-encoded result before it is refused."""
+    max_suspend_attempts: int = 5
+    """Times one step may park across executions before parking again fails it instead."""
 
 
 @dataclass(frozen=True)

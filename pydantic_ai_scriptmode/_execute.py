@@ -97,6 +97,8 @@ class Runner:
     """Parked entries from the prior record, by step name: a fan-out re-dispatches only their parked items."""
     resolutions: dict[str, Any] = field(default_factory=dict[str, Any])
     """The answer a parked step waited for, by step name, passed to `dispatch` when it runs again."""
+    suspend_attempts: dict[str, int] = field(default_factory=dict[str, int])
+    """Times each step has parked so far, carried from the record; the guard for `max_suspend_attempts`."""
     halt: tuple[RunStatus, str, Any] | None = None
     """`(status, step name, value or error message)` once a guard fired or a step failed."""
     suspensions: dict[str, list[tuple[int | None, Any]]] = field(
@@ -196,17 +198,21 @@ class Runner:
             self.park(step, e.parked, e.items)
             return
         except CallError as e:
-            if step.fallback is not None:
-                scope = dict(self.env)
-                if step.error_var is not None:
-                    scope[step.error_var] = str(e)
-                self.settle(step, 'done', self.evaluator.eval(parse_expression(step.fallback), scope))
-            elif step.on_error == 'skip':
-                self.settle(step, 'skipped')
-            else:
-                self.fail(step, str(e))
+            self.recover(step, e)
             return
         self.settle(step, 'done', value)
+
+    def recover(self, step: CallStep, error: CallError) -> None:
+        """Settle a failed call the way the script asked: error branch, skip, or fail the run."""
+        if step.fallback is not None:
+            scope = dict(self.env)
+            if step.error_var is not None:
+                scope[step.error_var] = str(error)
+            self.settle(step, 'done', self.evaluator.eval(parse_expression(step.fallback), scope))
+        elif step.on_error == 'skip':
+            self.settle(step, 'skipped')
+        else:
+            self.fail(step, str(error))
 
     async def gather_items(self, step: CallStep, calls: Sequence[Coroutine[Any, Any, Any]]) -> list[Any]:
         """Await every item, or on a re-entered fan-out only the parked ones; the rest come from the record.
@@ -288,7 +294,19 @@ class Runner:
         if status in ('done', 'skipped'):
             self.env[step.name] = value
 
-    def park(self, step: Step, parked: list[tuple[int | None, Any]], items: list[ItemRecord] | None = None) -> None:
+    def park(self, step: CallStep, parked: list[tuple[int | None, Any]], items: list[ItemRecord] | None = None) -> None:
+        """Settle `step` as parked, unless it has parked `max_suspend_attempts` times already; then it fails."""
+        attempts = self.suspend_attempts.get(step.name, 0) + 1
+        if attempts > self.limits.max_suspend_attempts:
+            self.recover(
+                step,
+                CallError(
+                    f'`{step.tool}` asked for a resolution {attempts} times, more than the limit of '
+                    f'{self.limits.max_suspend_attempts}'
+                ),
+            )
+            return
+        self.suspend_attempts[step.name] = attempts
         self.suspensions[step.name] = parked
         self.settle(step, 'suspended')
         self.settled[step.name].items = items
@@ -369,6 +387,7 @@ async def execute_plan(
         settled=dict(reused),
         carried=parked_steps(plan, record),
         resolutions=dict(resolutions or {}),
+        suspend_attempts=dict(record.suspend_attempts) if record is not None else {},
     )
     await runner.schedule()
 
@@ -401,5 +420,6 @@ async def execute_plan(
 
     steps = dict(record.steps) if record is not None else {}
     steps.update(runner.settled)
-    new_record = Record(steps=steps, status=status, at=at, output=output)
+    attempts = {name: n for name, n in runner.suspend_attempts.items() if steps[name].status == 'suspended'}
+    new_record = Record(steps=steps, status=status, at=at, output=output, suspend_attempts=attempts)
     return ExecuteResult(status=status, output=output, record=new_record, at=at, error=error, suspensions=suspensions)

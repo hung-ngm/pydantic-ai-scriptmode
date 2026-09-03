@@ -50,6 +50,8 @@ class Record:
     at: str | None = None
     """The step the last run returned, failed, or first suspended at."""
     output: Any = None
+    suspend_attempts: dict[str, int] = field(default_factory=dict[str, int])
+    """Times each step has parked, by name, while it is still parked; cleared when it settles otherwise."""
 
 
 class RecordStore(Protocol):

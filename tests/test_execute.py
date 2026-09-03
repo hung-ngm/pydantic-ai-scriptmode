@@ -301,3 +301,17 @@ class TestSuspend:
         assert resumed.status == 'done' and resumed.output == [10, 200, None, 40]
         assert tools.calls[5:] == [('f', {'k': 2})] and tools.resolutions[5:] == [True]
         assert resumed.record.steps['ys'].items is None
+
+    async def test_a_step_that_keeps_parking_fails_past_max_suspend_attempts(self):
+        tools = FakeTools(g=Suspend('ask'))
+        source = 'try:\n    y = await g(k=2)\nexcept Exception as e:\n    y = e\nreturn y'
+        record = None
+        for _ in range(2):
+            outcome = await run(source, tools, record=record, limits=Limits(max_suspend_attempts=2))
+            assert outcome.status == 'suspended'
+            record = outcome.record
+        assert record is not None and record.suspend_attempts == {'y': 2}
+        third = await run(source, tools, record=record, limits=Limits(max_suspend_attempts=2))
+        assert third.status == 'done'
+        assert third.output == '`g` asked for a resolution 3 times, more than the limit of 2'
+        assert third.record.suspend_attempts == {}
