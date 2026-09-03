@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 
 from pydantic_ai_scriptmode._compile import compile_script
-from pydantic_ai_scriptmode._execute import CallError, PlanExecutionError, execute_plan
+from pydantic_ai_scriptmode._execute import CallError, PlanExecutionError, Suspend, execute_plan
 from pydantic_ai_scriptmode._plan import CallStep, DeriveStep, Limits, Plan, step_hash
 from pydantic_ai_scriptmode._record import Record, StepRecord, reusable_steps
 
@@ -219,3 +219,19 @@ class TestRecordReuse:
         )
         assert set(reusable_steps(plan, record)) == {'x'}
         assert reusable_steps(plan, None) == {}
+
+
+class TestSuspend:
+    async def test_parked_call_suspends_the_run_after_independent_steps_settle(self):
+        tools = FakeTools(f='a', g=Suspend({'ask': 'ok?'}), h='c')
+        result = await run(
+            'x, y = await asyncio.gather(f(k=1), g(k=2))\nw = x + "!"\nz = await h(k=y)\nreturn [w, z]', tools
+        )
+        assert result.status == 'suspended' and result.at == 'y' and result.output is None
+        assert result.suspensions == [('y', None, {'ask': 'ok?'})]
+        steps = result.record.steps
+        assert steps['y'].status == 'suspended' and result.record.status == 'suspended'
+        assert steps['x'].value == 'a' and steps['w'].value == 'a!'
+        assert 'z' not in steps
+        assert [c[0] for c in tools.calls] == ['f', 'g']
+        assert set(reusable_steps(compile_script('y = await g(k=2)'), result.record)) == set()

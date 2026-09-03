@@ -7,13 +7,17 @@ from typing import Any, Literal, Protocol
 
 from pydantic_ai_scriptmode._plan import Plan, step_hash
 
-StepStatus = Literal['done', 'skipped', 'error', 'returned']
-RunStatus = Literal['done', 'returned', 'error']
+StepStatus = Literal['done', 'skipped', 'error', 'returned', 'suspended']
+RunStatus = Literal['done', 'returned', 'error', 'suspended']
 
 
 @dataclass
 class StepRecord:
-    """The settled outcome of one step: its authored hash and value or error."""
+    """The settled outcome of one step: its authored hash and value or error.
+
+    `done` and `skipped` are reusable. `error`, `returned`, and `suspended` are re-entry points:
+    the step runs again on the next execution, `suspended` with the resolution it was waiting for.
+    """
 
     hash: str
     status: StepStatus
@@ -28,7 +32,7 @@ class Record:
     steps: dict[str, StepRecord] = field(default_factory=dict[str, StepRecord])
     status: RunStatus = 'done'
     at: str | None = None
-    """The step the last run returned or failed at."""
+    """The step the last run returned, failed, or first suspended at."""
     output: Any = None
 
 

@@ -19,8 +19,9 @@ from pydantic_ai_scriptmode._record import Record, RunStatus, StepRecord, reusab
 Dispatch = Callable[[CallStep, dict[str, Any]], Awaitable[Any]]
 """Performs one call of `step` with evaluated `args` and returns the tool's result.
 
-Raise `CallError` for a failure the script may handle with its error branch. Any other exception
-propagates out of `execute_plan` untouched; that is how approval and deferral signals escape.
+Raise `CallError` for a failure the script may handle with its error branch, or `Suspend` to park
+the call on a resolution it needs first. Any other exception propagates out of `execute_plan`
+untouched.
 """
 
 
@@ -30,6 +31,22 @@ def _as_list(value: Any) -> list[Any] | None:
 
 class CallError(Exception):
     """A call failed in a way the script can handle: the tool raised, refused, or was denied."""
+
+
+class Suspend(Exception):
+    """A call is parked on a resolution: the step settles `suspended` and the run parks once nothing else can settle.
+
+    `payload` is whatever the dispatch wants the resolver to see; it travels on `ExecuteResult`,
+    never on the record.
+    """
+
+    def __init__(self, payload: Any = None) -> None:
+        super().__init__('suspended')
+        self.payload = payload
+
+
+Suspension = tuple[str, int | None, Any]
+"""`(step name, fan-out item index or None, payload)` for one parked call."""
 
 
 class PlanExecutionError(Exception):
@@ -45,6 +62,8 @@ class ExecuteResult:
     record: Record
     at: str | None = None
     error: str | None = None
+    suspensions: list[Suspension] = field(default_factory=list[Suspension])
+    """Every parked call, in plan order, when `status` is `suspended`."""
 
 
 @dataclass
@@ -63,6 +82,10 @@ class Runner:
     settled: dict[str, StepRecord] = field(default_factory=dict[str, StepRecord])
     halt: tuple[RunStatus, str, Any] | None = None
     """`(status, step name, value or error message)` once a guard fired or a step failed."""
+    suspensions: dict[str, list[tuple[int | None, Any]]] = field(
+        default_factory=dict[str, list[tuple[int | None, Any]]]
+    )
+    """Parked calls by step name: `(item index or None, payload)`."""
 
     def __post_init__(self) -> None:
         self.budget = NodeBudget(self.limits.max_expression_nodes)
@@ -93,7 +116,8 @@ class Runner:
         """Pending steps whose dependencies have all settled and that no unsettled guard fences.
 
         A guard is a fence: it is ready only once every earlier step has settled, and no step
-        after a pending guard is ready.
+        after a pending guard is ready. A parked step is settled but bound to nothing, so what
+        reads it, and any guard after it, waits for the resolution.
         """
         ready: list[Step] = []
         for step in self.plan.steps:
@@ -101,12 +125,17 @@ class Runner:
                 continue
             if isinstance(step, GuardStep):
                 earlier = self.order[: self.order.index(step.name)]
-                if all(n in self.settled for n in earlier):
+                if all(self.bound(n) for n in earlier):
                     ready.append(step)
                 break  # nothing past an unsettled guard may start
-            if all(dep in self.settled for dep in self.deps[step.name]):
+            if all(self.bound(dep) for dep in self.deps[step.name]):
                 ready.append(step)
         return ready
+
+    def bound(self, name: str) -> bool:
+        """Whether `name` settled with a value a later step may read; a parked step binds nothing."""
+        entry = self.settled.get(name)
+        return entry is not None and entry.status != 'suspended'
 
     # -- settling one step ------------------------------------------------------------------------
 
@@ -142,6 +171,10 @@ class Runner:
                 scopes: list[dict[str, Any]] = [{**self.env, step.each_var: item} for item in items]
                 calls = [self.call_once(step, self.eval_args(step, scope)) for scope in scopes]
                 value = self.collect_items(step, await asyncio.gather(*calls, return_exceptions=True))
+        except Suspend as e:
+            self.suspensions[step.name] = [(None, e.payload)]
+            self.settle(step, 'suspended')
+            return
         except CallError as e:
             if step.fallback is not None:
                 scope = dict(self.env)
@@ -191,7 +224,7 @@ class Runner:
         return self.evaluator.eval(parse_expression(source), self.env)
 
     def settle(self, step: Step, status: str, value: Any = None, error: str | None = None) -> None:
-        assert status in ('done', 'skipped', 'error', 'returned')
+        assert status in ('done', 'skipped', 'error', 'returned', 'suspended')
         if holds_function_value(value):
             # A record must hold data: it is stored, reused, and returned to the model.
             raise EvalError(f'`{step.name}` holds a function, not a value; write the lambda inline where it is used')
@@ -220,8 +253,10 @@ class Runner:
         - A halt stops new launches but lets in-flight steps settle, so the record holds what
           their tools actually did. Cancelling them would leave a call half-done on the tool's
           side with no trace in the record.
-        - Nothing ready, steps pending, nothing in flight: validation should make that
-          impossible, so raise `PlanExecutionError` rather than return a partial record.
+        - A parked step is settled but binds nothing, so its dependents never become ready.
+          Nothing ready, steps pending, nothing in flight is then the run parking, not a
+          deadlock; without a parked step it is a bug validation should have caught, so raise
+          `PlanExecutionError` rather than return a partial record.
         """
         in_flight: dict[asyncio.Task[None], str] = {}
         try:
@@ -232,7 +267,7 @@ class Runner:
                         if step.name not in running:
                             in_flight[asyncio.create_task(self.run_step(step))] = step.name
                 if not in_flight:
-                    if self.pending and not self.halted:
+                    if self.pending and not self.halted and not self.suspensions:
                         names = [s.name for s in self.pending]
                         raise PlanExecutionError(f'no step is ready but {names} are pending')
                     return
@@ -267,12 +302,19 @@ async def execute_plan(
     at: str | None = None
     error: str | None = None
     output: Any = None
+    suspensions: list[Suspension] = []
     if runner.halt is not None:
         status, at, payload = runner.halt
         if status == 'returned':
             output = payload
         else:
             error = payload
+    elif runner.suspensions:
+        status = 'suspended'
+        for name in runner.order:
+            for index, payload in runner.suspensions.get(name, ()):
+                suspensions.append((name, index, payload))
+        at = suspensions[0][0]
     elif plan.output is not None:
         try:
             output = runner.eval(plan.output)
@@ -286,4 +328,4 @@ async def execute_plan(
     steps = dict(record.steps) if record is not None else {}
     steps.update(runner.settled)
     new_record = Record(steps=steps, status=status, at=at, output=output)
-    return ExecuteResult(status=status, output=output, record=new_record, at=at, error=error)
+    return ExecuteResult(status=status, output=output, record=new_record, at=at, error=error, suspensions=suspensions)
