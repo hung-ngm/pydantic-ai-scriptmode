@@ -89,3 +89,11 @@ _Avoid_: pause, deferral, interrupt
 **Resolution**:
 The answer that lets a parked call dispatch again: today only the approval.
 _Avoid_: resume value, callback, response
+
+**Script tool**:
+A script the developer saved under a name and exposed as a tool; calling it runs its plan with the call's arguments bound as `input`.
+_Avoid_: macro, saved plan, compiled tool, mounted tool, subroutine
+
+**Input**:
+The per-call data a plan reads as `input`: a script tool's arguments, nothing for `run_script`. A step that reads it is never reused.
+_Avoid_: variables, arguments (those belong to a call), parameters (the declared schema)
