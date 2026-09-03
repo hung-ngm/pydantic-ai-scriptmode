@@ -3,7 +3,7 @@
 The shape ScriptMode is for: fan out over a list, filter on what came back, act on the survivors.
 Plain tool use pays a model round trip per call; a script pays one.
 
-Run:  uv run python examples/tutor.py [task ...]   (tasks: practice, reviews, impossible)
+Run:  uv run python examples/tutor.py [task ...]   (tasks: practice, reviews, impossible, reset)
 Reads ANTHROPIC_API_KEY from `.env` via python-dotenv; a standard workspace key, not an identity-linked
 one. Override the model with SCRIPTMODE_TRIAL_MODEL; set SCRIPTMODE_DYNAMIC_CATALOG=1 to trial the catalog in instructions.
 """
@@ -17,7 +17,7 @@ import sys
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
-from pydantic_ai import Agent, ModelRetry
+from pydantic_ai import Agent, ApprovalRequired, DeferredToolRequests, ModelRetry, RunContext
 from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
@@ -84,6 +84,7 @@ SCORES = {
     'primes': 0.6,
 }
 NO_BANK = {'algebra-1'}  # fetch_exercises fails for this topic
+reset: list[str] = []
 scheduled: list[tuple[str, int]] = []
 
 tools: FunctionToolset[None] = FunctionToolset()
@@ -116,13 +117,26 @@ async def schedule_review(topic_id: str, days: int) -> str:
     return f'review of {topic_id} in {days} days'
 
 
+@tools.tool
+async def reset_mastery(ctx: RunContext[None], topic_id: str) -> str:
+    """Reset the student's mastery of a topic to zero. Needs the tutor's approval."""
+    if not ctx.tool_call_approved:
+        raise ApprovalRequired
+    reset.append(topic_id)
+    return f'reset {topic_id}'
+
+
 INSTRUCTIONS = 'You are a maths tutor managing one student. Reply with a one-line summary when done.'
 
 # The same tools, two ways: called one by one, or folded behind `run_script`.
-plain_agent: Agent[None, str] = Agent(MODEL, deps_type=type(None), toolsets=[tools], instructions=INSTRUCTIONS)
-script_agent: Agent[None, str] = Agent(
+Output = str | DeferredToolRequests
+plain_agent: Agent[None, Output] = Agent(
+    MODEL, deps_type=type(None), output_type=[str, DeferredToolRequests], toolsets=[tools], instructions=INSTRUCTIONS
+)
+script_agent: Agent[None, Output] = Agent(
     MODEL,
     deps_type=type(None),
+    output_type=[str, DeferredToolRequests],
     toolsets=[tools],
     capabilities=[ScriptMode[None](dynamic_catalog=DYNAMIC_CATALOG)],
     instructions=INSTRUCTIONS + ' Use run_script to do a whole task in one call.',
@@ -134,6 +148,7 @@ TASKS = {
     'Skip a topic if its exercises cannot be fetched.',
     'reviews': 'Schedule a review in 2 days for every topic with mastery below 0.8. If none, say so.',
     'impossible': 'Email me a progress report.',
+    'reset': 'Reset mastery for every topic the student scores below 0.5 on, so they start those over.',
 }
 
 
@@ -169,15 +184,25 @@ def show(messages: list[ModelMessage], usage: RunUsage) -> Stats:
     return Stats(usage.requests, tool_calls, retries, usage.total_tokens)
 
 
-async def run_task(agent: Agent[None, str], label: str, prompt: str) -> Stats | None:
-    """Run one task on one agent and print the trace."""
+async def run_task(agent: Agent[None, Output], label: str, prompt: str) -> Stats | None:
+    """Run one task on one agent and print the trace; approve every approval request and continue."""
     print(f'--- [{label}]')
+    usage = RunUsage()
     try:
         result = await agent.run(prompt)
+        usage.incr(result.usage)
+        while isinstance(result.output, DeferredToolRequests):
+            for call in result.output.approvals:
+                print(f'--- approval requested: {call.tool_name} {result.output.metadata.get(call.tool_call_id, {})}')
+            result = await agent.run(
+                message_history=result.all_messages(),
+                deferred_tool_results=result.output.build_results(approve_all=True),
+            )
+            usage.incr(result.usage)
     except Exception as e:  # noqa: BLE001 - the failure is the finding
         print(f'raised {type(e).__name__}: {e}\n')
         return None
-    stats = show(result.all_messages(), result.usage)
+    stats = show(result.all_messages(), usage)
     print(f'--- answer\n{result.output}')
     print(
         f'--- {stats.requests} model requests, {stats.tool_calls} tool calls, {stats.retries} retries, {stats.tokens} tokens\n'
@@ -195,8 +220,10 @@ async def main() -> None:
         prompt = TASKS[name]
         print(f'=== {name}: {prompt}')
         scheduled.clear()
+        reset.clear()
         plain = await run_task(plain_agent, 'plain tools', prompt)
         scheduled.clear()
+        reset.clear()
         script = await run_task(script_agent, 'script mode', prompt)
         rows.append((name, plain, script))
 
