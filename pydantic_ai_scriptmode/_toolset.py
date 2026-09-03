@@ -98,6 +98,10 @@ _FUNCTIONS_HEADER = (
     'arguments only; do not define or import anything.'
 )
 
+_CATALOG_IN_INSTRUCTIONS = (
+    'The tools callable from a script, with their signatures, are listed in the system instructions.'
+)
+
 
 def _sanitize_tool_name(name: str) -> str:
     safe = _INVALID_IDENT_CHARS.sub('_', name)
@@ -210,8 +214,13 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
     max_retries: int = 3
     limits: Limits = field(default_factory=Limits)
     record_store: RecordStore = field(default_factory=InMemoryRecordStore)
+    dynamic_catalog: bool = False
+    """Keep the catalog out of the `run_script` description and surface it through `get_instructions`."""
 
     _warned_no_return_schema: set[str] = field(default_factory=set[str], init=False, repr=False)
+    # The catalog stashed by `get_tools` and read back by `get_instructions` in the same step.
+    # Empty when `dynamic_catalog` is off or nothing is folded.
+    _last_catalog: str = field(default='', init=False, repr=False)
 
     async def get_tools(self, ctx: RunContext[AgentDepsT]) -> dict[str, ToolsetTool[AgentDepsT]]:
         """Return `run_script` plus the tools that stay native."""
@@ -236,12 +245,18 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
             raise UserError(f"Tool name '{RUN_SCRIPT_TOOL_NAME}' is reserved for script mode. Rename your tool.")
 
         callable_defs, sanitized_to_original = self._fold(folded)
+        if self.dynamic_catalog:
+            description = self._static_description() + '\n\n' + _CATALOG_IN_INSTRUCTIONS
+            self._last_catalog = _catalog(callable_defs)
+        else:
+            description = self._description(callable_defs)
+            self._last_catalog = ''
         result: dict[str, ToolsetTool[AgentDepsT]] = dict(native)
         result[RUN_SCRIPT_TOOL_NAME] = _RunScriptTool(
             toolset=self,
             tool_def=ToolDefinition(
                 name=RUN_SCRIPT_TOOL_NAME,
-                description=self._description(callable_defs),
+                description=description,
                 parameters_json_schema=_RUN_SCRIPT_JSON_SCHEMA,
                 metadata={'code_arg_name': 'script', 'code_arg_language': 'python'},
                 sequential=True,
@@ -326,18 +341,28 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
             callable_defs[safe] = td
         return callable_defs, sanitized_to_original
 
+    def _static_description(self) -> str:
+        return '\n\n'.join([_DESCRIPTION_HEAD, _limits_paragraph(self.limits)])
+
     def _description(self, callable_defs: dict[str, ToolDefinition]) -> str:
-        sections = [_DESCRIPTION_HEAD, _limits_paragraph(self.limits)]
-        if callable_defs:
-            sigs = [td.function_signature for td in callable_defs.values()]
-            conflicting = FunctionSignature.get_conflicting_type_names(sigs)
-            sections.append(_FUNCTIONS_HEADER)
-            type_blocks = FunctionSignature.render_type_definitions(sigs, conflicting)
-            if type_blocks:
-                sections.append('```python\n' + '\n\n'.join(type_blocks) + '\n```')
-            function_blocks = [
-                td.render_signature('...', is_async=True, conflicting_type_names=conflicting)
-                for td in callable_defs.values()
-            ]
-            sections.append('```python\n' + '\n\n'.join(function_blocks) + '\n```')
-        return '\n\n'.join(sections)
+        catalog = _catalog(callable_defs)
+        if not catalog:
+            return self._static_description()
+        return self._static_description() + '\n\n' + catalog
+
+
+def _catalog(callable_defs: dict[str, ToolDefinition]) -> str:
+    """Render the folded tools' signatures, or `''` when nothing is folded."""
+    if not callable_defs:
+        return ''
+    sigs = [td.function_signature for td in callable_defs.values()]
+    conflicting = FunctionSignature.get_conflicting_type_names(sigs)
+    sections = [_FUNCTIONS_HEADER]
+    type_blocks = FunctionSignature.render_type_definitions(sigs, conflicting)
+    if type_blocks:
+        sections.append('```python\n' + '\n\n'.join(type_blocks) + '\n```')
+    function_blocks = [
+        td.render_signature('...', is_async=True, conflicting_type_names=conflicting) for td in callable_defs.values()
+    ]
+    sections.append('```python\n' + '\n\n'.join(function_blocks) + '\n```')
+    return '\n\n'.join(sections)

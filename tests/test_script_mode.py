@@ -265,3 +265,43 @@ class TestToolsetDirect:
         tools = await toolset.get_tools(ctx)
         with pytest.raises(UserError, match='tool_manager'):
             await toolset.call_tool(RUN_SCRIPT_TOOL_NAME, {'script': 'x = 1'}, ctx, tools[RUN_SCRIPT_TOOL_NAME])
+
+
+def add(a: int, b: int) -> int:
+    """Add two numbers."""
+    return a + b
+
+
+def run_context() -> RunContext[None]:
+    """A bare context with a pending-message queue, so capability hooks can enqueue."""
+    return RunContext(deps=None, model=TestModel(), usage=RunUsage(), pending_messages=[])
+
+
+class TestDynamicCatalog:
+    """`ScriptMode(dynamic_catalog=True)`: catalog in instructions, discoveries announced.
+
+    Two surfaces: `ScriptModeToolset` moves the signatures out of the `run_script` description and
+    into a dynamic `InstructionPart`; `ScriptMode` announces newly discovered tools with an enqueued
+    `SystemPromptPart`.
+    """
+
+    async def test_description_drops_signatures_keeps_head_and_limits(self):
+        toolset = ScriptModeToolset(wrapped=FunctionToolset([add]), dynamic_catalog=True)
+        tools = await toolset.get_tools(run_context())
+        description = tools[RUN_SCRIPT_TOOL_NAME].tool_def.description or ''
+        assert 'async def add' not in description
+        assert 'Run a short script of tool calls' in description
+        assert 'at most 20 steps' in description
+        assert 'system instructions' in description
+
+    async def test_default_keeps_catalog_in_description(self):
+        toolset = ScriptModeToolset(wrapped=FunctionToolset([add]))
+        tools = await toolset.get_tools(run_context())
+        assert 'async def add(*, a: int, b: int) -> int' in (tools[RUN_SCRIPT_TOOL_NAME].tool_def.description or '')
+        assert toolset._last_catalog == ''  # pyright: ignore[reportPrivateUsage]
+
+    async def test_stash_is_empty_when_nothing_is_folded(self):
+        toolset = ScriptModeToolset(wrapped=FunctionToolset(), dynamic_catalog=True)
+        tools = await toolset.get_tools(run_context())
+        assert 'system instructions' in (tools[RUN_SCRIPT_TOOL_NAME].tool_def.description or '')
+        assert toolset._last_catalog == ''  # pyright: ignore[reportPrivateUsage]
