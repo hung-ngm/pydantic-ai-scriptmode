@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Coroutine, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -175,7 +175,8 @@ class Runner:
             self.fail(step, str(e))
 
     async def run_call(self, step: CallStep) -> None:
-        resolution = self.resolutions.get(step.name)
+        # The resolution reaches only what the record parked: a call the plan re-enters unchanged.
+        resolution = self.resolutions.get(step.name) if step.name in self.carried else None
         try:
             if step.each is None:
                 value = await self.call_once(step, self.eval_args(step, self.env), resolution)
@@ -189,8 +190,8 @@ class Runner:
                     )
                 assert step.each_var is not None
                 scopes: list[dict[str, Any]] = [{**self.env, step.each_var: item} for item in items]
-                calls = [self.call_once(step, self.eval_args(step, scope), resolution) for scope in scopes]
-                value = self.collect_items(step, await self.gather_items(step, calls))
+                args = [self.eval_args(step, scope) for scope in scopes]
+                value = self.collect_items(step, await self.gather_items(step, args, resolution))
         except Suspend as e:
             self.park(step, [(None, e.payload)])
             return
@@ -214,29 +215,28 @@ class Runner:
         else:
             self.fail(step, str(error))
 
-    async def gather_items(self, step: CallStep, calls: Sequence[Coroutine[Any, Any, Any]]) -> list[Any]:
-        """Await every item, or on a re-entered fan-out only the parked ones; the rest come from the record.
+    async def gather_items(self, step: CallStep, args: Sequence[dict[str, Any]], resolution: Any) -> list[Any]:
+        """Call every item, or on a re-entered fan-out only the parked ones; the rest come from the record.
 
         A settled item comes back as its value, or as the `CallError` it failed with, so
         `collect_items` treats reused and fresh items alike. The carried items apply only when
-        they line up with the list being fanned out; otherwise every item runs.
+        they line up with the list being fanned out; otherwise every item runs, unresolved.
         """
         prior = self.carried.get(step.name)
-        if prior is None or prior.items is None or len(prior.items) != len(calls):
-            return await asyncio.gather(*calls, return_exceptions=True)
+        if prior is None or prior.items is None or len(prior.items) != len(args):
+            return await asyncio.gather(*(self.call_once(step, a) for a in args), return_exceptions=True)
         results: list[Any] = []
-        fresh: list[tuple[int, Coroutine[Any, Any, Any]]] = []
-        for index, (item, call) in enumerate(zip(prior.items, calls, strict=True)):
+        fresh: list[int] = []
+        for index, item in enumerate(prior.items):
             if item.status == 'suspended':
                 results.append(None)
-                fresh.append((index, call))
+                fresh.append(index)
             elif item.status == 'skipped':
                 results.append(CallError(item.error or ''))
-                call.close()
             else:
                 results.append(item.value)
-                call.close()
-        for (index, _), result in zip(fresh, await asyncio.gather(*(c for _, c in fresh), return_exceptions=True)):
+        calls = [self.call_once(step, args[i], resolution) for i in fresh]
+        for index, result in zip(fresh, await asyncio.gather(*calls, return_exceptions=True), strict=True):
             results[index] = result
         return results
 

@@ -315,3 +315,19 @@ class TestSuspend:
         assert third.status == 'done'
         assert third.output == '`g` asked for a resolution 3 times, more than the limit of 2'
         assert third.record.suspend_attempts == {}
+
+    async def test_a_resolution_reaches_only_the_calls_the_record_parked(self):
+        def f(k: int) -> int:
+            if k == 2:
+                raise Suspend({'k': k})
+            return k * 10
+
+        tools = FakeTools(xs=[1, 2, 3], f=f)
+        source = 'xs = await xs()\nys = [await f(k=x) for x in xs[:3]]\nreturn ys'
+        parked = await run(source, tools)
+        assert parked.status == 'suspended'
+        # The list changed upstream, so `ys` runs from scratch: no item carries the approval.
+        tools.tools['xs'] = [1, 2, 4]
+        rerun = await run(source.replace('xs()', 'xs(v=2)'), tools, record=parked.record, resolutions={'ys': True})
+        assert rerun.status == 'suspended' and rerun.suspensions == [('ys', 1, {'k': 2})]
+        assert [c[0] for c in tools.calls[4:]] == ['xs', 'f', 'f', 'f'] and tools.resolutions[5:] == [None, None, None]
