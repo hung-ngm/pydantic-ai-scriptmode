@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
+from typing_extensions import NotRequired, TypedDict
 
 from pydantic_ai_scriptmode import CompileError, ScriptTool
 
@@ -30,3 +32,32 @@ class TestConstruction:
         with pytest.raises(CompileError) as exc_info:
             ScriptTool('bad', 'while True:\n    pass')
         assert exc_info.value.issues
+
+
+class Params(TypedDict):
+    repo: str
+    limit: NotRequired[int]
+
+
+class TestParameters:
+    def test_a_python_type_renders_its_json_schema_and_validates_the_arguments(self):
+        tool = ScriptTool('close_stale', CLOSE_STALE, parameters=Params, returns=dict[str, int])
+        assert tool.parameters_json_schema == {
+            'type': 'object',
+            'properties': {'repo': {'type': 'string'}, 'limit': {'type': 'integer'}},
+            'required': ['repo'],
+        }
+        assert tool.return_schema == {'type': 'object', 'additionalProperties': {'type': 'integer'}}
+        assert tool.validate_input({'repo': 'api'}) == {'repo': 'api'}
+        with pytest.raises(ValidationError):
+            tool.validate_input({'repo': 3})
+
+    def test_a_json_schema_passes_through_and_the_default_takes_no_arguments(self):
+        schema = {'type': 'object', 'properties': {'repo': {'type': 'string'}}, 'required': ['repo']}
+        tool = ScriptTool('close_stale', CLOSE_STALE, parameters=schema)
+        assert tool.parameters_json_schema == schema
+        assert tool.validate_input({'repo': 'api', 'extra': 1}) == {'repo': 'api', 'extra': 1}
+        bare = ScriptTool('list_all', '# List all\nissues = await list_issues(repo="api")')
+        assert bare.parameters_json_schema == {'type': 'object', 'properties': {}}
+        assert bare.return_schema is None
+        assert bare.validate_input({}) == {}
