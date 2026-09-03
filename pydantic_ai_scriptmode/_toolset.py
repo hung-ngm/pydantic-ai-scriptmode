@@ -285,7 +285,9 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
         `dynamic=True` puts it after the cache breakpoint on providers that split instructions
         (Anthropic, Bedrock), so a discovery changes the catalog without busting the static prefix.
         """
-        upstream = await self.wrapped.get_instructions(ctx)
+        # Through the base class, not `self.wrapped` directly: the base collects the wrapped
+        # toolset's parts with their owner keys, so an upstream toolset's id stays on its own text.
+        upstream = await super().get_instructions(ctx)
         if not self._last_catalog:
             return upstream
         catalog = InstructionPart(content=self._last_catalog, dynamic=True)

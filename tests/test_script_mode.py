@@ -515,3 +515,19 @@ class TestDiscoveryAnnouncement:
         ctx = run_context()
         await announce_local(cap, ctx, {'discovered_tools': [{'name': 'get-weather'}, {'name': 'github.me'}]})
         assert announcements(ctx) == [f'{ANNOUNCED}: `get_weather`, `github_me`.']
+
+    async def test_upstream_instructions_keep_their_toolset_attribution(self):
+        """Relaying through the base class keeps the wrapped toolset's id on its own instruction parts."""
+
+        class Upstream(FunctionToolset[None]):
+            async def get_instructions(self, ctx: RunContext[None]) -> str:
+                return 'crm rules'
+
+        toolset = ScriptModeToolset(wrapped=Upstream([add], id='crm'), dynamic_catalog=True)
+        ctx = run_context()
+        await toolset.get_tools(ctx)
+        instructions = await toolset.get_instructions(ctx)
+        assert isinstance(instructions, list)
+        first = instructions[0]
+        assert isinstance(first, InstructionPart) and first.content == 'crm rules'
+        assert first.id is not None and 'crm' in str(first.id.source)
