@@ -19,6 +19,7 @@ from pydantic_ai.messages import (
     TextPart,
     ToolCallPart,
     ToolReturnPart,
+    UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
@@ -479,7 +480,7 @@ class TestDiscoveryAnnouncement:
             last = messages[-1]
             assert isinstance(last, ModelRequest)
             prompts.append(
-                '\n'.join(str(p.content) for p in last.parts if p.part_kind in ('system-prompt', 'user-prompt'))
+                '\n'.join(str(p.content) for p in last.parts if isinstance(p, (SystemPromptPart, UserPromptPart)))
             )
             if len(messages) == 1:
                 return ModelResponse(parts=[ToolCallPart('search_tools', {'queries': ['weather']}, tool_call_id='s1')])
