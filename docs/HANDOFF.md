@@ -1,6 +1,6 @@
-# Handoff: pydantic-ai-scriptmode (`dynamic_catalog` built, trialled, and pushed; next is backlog item 2)
+# Handoff: pydantic-ai-scriptmode (suspend and detach done, reviewed, and pushed; next is backlog item 3)
 
-Date: 2026-09-03
+Date: 2026-09-04
 Workspace: `/Users/hungng/Documents/AI/experiments/pydantic-experiments/`
 Project: `pydantic-ai-scriptmode/`
 This file is the single source of truth for progress. Update it in place at the end of each
@@ -8,10 +8,20 @@ session; do not write handoff copies elsewhere (no temp-directory copies, no pro
 
 ## Where things stand
 
-The package is complete, reviewed, trialled against a real model, committed, and pushed. `make all`
-(ruff format, ruff check, pyright strict, pytest) is green: 174 passed, no xfails, no skips.
-`git log` on `main`, newest first (handoff-only commits omitted):
+Backlog item 2, suspend and detach (ADR 0004), is built by TDD, trialled against a real model,
+committed, and pushed. `make all` (ruff format, ruff check, pyright strict, pytest) is green: 190
+passed, no xfails, no skips. `git log` on `main`, newest first (handoff-only commits omitted):
 
+- `3ee811f` Review fixes: an approval covers only the calls it was asked for; no record on resume is a `UserError`; a fan-out past the suspend limit keeps its done items; parks count only when surfaced; tool approval metadata passes through
+- `1c9b299` Engine: a resolution reaches only the call or items the record parked; a re-run from scratch is unresolved
+- `ab2d292` Tutor harness: `reset` task with an approval-gated tool; approvals are granted and the run continues
+- `94ca65e` README documents suspension; `Suspend` and `ItemRecord` are public; ADR 0004 accepted
+- `49618f1` `ScriptMode`: a call nothing approved inline parks the run; `run_script` raises `ApprovalRequired` and the approved re-run resumes from the record
+- `092175a` Engine: `Limits.max_suspend_attempts`; a step that keeps parking fails with an error its branch can catch
+- `f3a1356` Engine: `execute_plan(resolutions=...)` re-enters parked steps, re-dispatching only parked items; `Dispatch` takes `resolution`
+- `348f3a3` Engine: a parked fan-out item keeps its done siblings as item records; an item error wins over a parked item
+- `88350ea` Engine: a `Dispatch` may raise `Suspend`; the step parks, independent steps settle, the run is suspended
+- `3a0fc05` ADR 0004 (proposed): suspend and detach, with Suspension and Resolution in the glossary
 - `e2d9840` Description stays true before any tool is folded; search addendum when `search_tools` is native
 - `7dbbe7b` Instruction tests compare content, since upstream text arrives normalized
 - `b64acab` `get_instructions` relays upstream parts through the base class so owner keys survive
@@ -50,12 +60,23 @@ the Logfire hunks remain unstaged. One review finding is for the user, not this 
 `logfire auth` or a token raises or prompts before `main()`; `send_to_logfire='if-token-present'`
 (and `console=False` to keep the printed trace clean) would fix it.
 
-Steps 1 to 4 are done. Backlog items 0 and 1 are done. The next item is 2, suspend and detach,
+Steps 1 to 4 are done. Backlog items 0, 1, and 2 are done. The next item is 3, script-as-tool,
 which starts with an ADR.
 
 Session history, newest first:
 
-- 2026-09-03 (latest, third part): built `dynamic_catalog` by TDD in the order of the build plan,
+- 2026-09-03 (fourth part): wrote ADR 0004 after reading callscript's suspend path and pydantic-ai
+  2.37's approval plumbing. Two facts changed the handoff's plan: `DeferredToolRequests.build_results`
+  sends `metadata={}` unless the caller copies it, so `ctx.tool_call_metadata` cannot carry the
+  resume, and a denied `run_script` is answered by Pydantic AI before the toolset sees it. Grilled the
+  ADR (seven questions); the user took every recommendation. Built by TDD, one commit per behaviour.
+  The auto-mode Bash classifier was down for some minutes mid-session; copy edits were done with the
+  file tools meanwhile and committed once it returned. Trialled on the tutor harness with a new
+  `reset` task (see "Trial findings"); the tutor hunk was staged from a HEAD copy so the user's
+  Logfire hunks stayed uncommitted. `code-review` at `medium` hit the session limit once and
+  completed on the retry after the limit reset: ten findings, seven fixed in `1c9b299` and
+  `3ee811f`, the rest recorded under "Review findings".
+- 2026-09-03 (third part): built `dynamic_catalog` by TDD in the order of the build plan,
   one commit per behaviour (`f52fe14` to `0458a58`). Domain-modeling pass added two glossary terms
   (`8afc7e1`). Trialled on the tutor harness with the flag on (see "Trial findings"). The
   `code-review` skill at `medium` hit the session rate limit mid-verification again; its fourteen
@@ -91,8 +112,8 @@ Read these first, in order. Do not restate them here.
 
 - `README.md`: usage, "How it works", grammar table, options, retry messages.
 - `CONTEXT.md`: glossary (18 terms). Use these words in code, docs, tests, and this file.
-- `docs/adr/0001-*.md`, `0002-*.md`, `0003-*.md`: why inert plan, why Python surface, why the
-  catalog can move into instructions.
+- `docs/adr/0001-*.md` to `0004-*.md`: why inert plan, why Python surface, why the catalog can
+  move into instructions, why a parked call resumes from the record.
 - Project memory `~/.claude/projects/-Users-hungng-Documents-AI-experiments-pydantic-experiments/memory/scriptmode-project.md`
   (loaded automatically via `MEMORY.md`).
 
@@ -108,8 +129,8 @@ what it owns.
 | `_plan.py` | `CallStep`, `DeriveStep`, `GuardStep`, `Plan`, `Limits`, `step_hash` | via compile tests |
 | `_compile.py` | `compile_script` -> `Plan` or `CompileError` (all issues at once) | `tests/test_compile.py` |
 | `_validate.py` | `validate_plan`, `ToolSignature` | `tests/test_validate.py` |
-| `_record.py` | `Record`, `StepRecord`, `RecordStore` protocol, `InMemoryRecordStore`, `reusable_steps` | `tests/test_execute.py::TestRecordReuse` |
-| `_execute.py` | `Runner` (with `schedule`), `execute_plan`, `CallError`, `Dispatch` | `tests/test_execute.py` |
+| `_record.py` | `Record`, `StepRecord`, `ItemRecord`, `RecordStore` protocol, `InMemoryRecordStore`, `reusable_steps`, `parked_steps` | `tests/test_execute.py::TestRecordReuse`, `::TestSuspend` |
+| `_execute.py` | `Runner` (with `schedule`), `execute_plan`, `CallError`, `Suspend`, `Dispatch` | `tests/test_execute.py` |
 | `_toolset.py` | `ScriptModeToolset(WrapperToolset)`, `run_script` description, catalog stash and `get_instructions`, dispatch | `tests/test_script_mode.py` |
 | `_capability.py` | `ScriptMode(AbstractCapability)`, discovery announcements | `tests/test_script_mode.py` |
 
@@ -119,7 +140,8 @@ Public surface is `pydantic_ai_scriptmode/__init__.py` (`__all__`).
 later, so nothing else may depend on it. It builds the same four tools into two agents, one with
 plain tools and one with `ScriptMode`, runs each task on both, prints every script, retry, and
 return, and ends with a comparison table (model requests, tool calls, total tokens).
-`uv run python examples/tutor.py [task ...]`, tasks `practice`, `reviews`, `impossible`;
+`uv run python examples/tutor.py [task ...]`, tasks `practice`, `reviews`, `impossible`, `reset`
+(the last needs approval for `reset_mastery`; the harness approves every request and continues);
 `SCRIPTMODE_DYNAMIC_CATALOG=1` turns the flag on for the script agent. Needs
 `ANTHROPIC_API_KEY` in `.env` (git-ignored). All dependency groups are default in `[tool.uv]`, so
 plain `uv sync` and `uv run` install the linters and the Anthropic extra together.
@@ -151,8 +173,8 @@ the scheduler answer key and swap helper from the learning phase are redundant a
   same name, or `pass`). The error is bound to the `as` name as its message string.
 - Anonymous steps are named `_callN` / `_guardN` by position.
 - Tool exceptions, `ModelRetry`, argument `ValidationError`, and `ToolDenied` all become `CallError`
-  so the script's error branch can catch them. `ApprovalRequired` / `CallDeferred` are handled
-  inline or become `UserError`; see the `_Dispatcher` entry below.
+  so the script's error branch can catch them. `ApprovalRequired` is resolved inline or parks the
+  run (ADR 0004, "Suspension" below); `CallDeferred` is resolved inline or is a `UserError`.
 - Untyped tools have `return_schema == {}` (not `None`) in pydantic-ai 2.37, so the "no return
   schema" warning checks falsiness.
 - The record is saved even when the run fails, so a retry reuses settled steps. The retry message
@@ -161,17 +183,16 @@ the scheduler answer key and swap helper from the learning phase are redundant a
   with `FIRST_COMPLETED` wakes on any settlement and launches what became ready. A halt gates new
   launches only, so in-flight steps settle and the record holds what their tools did. When
   `run_step` raises a `finally` cancels and awaits the remaining tasks so none outlives the run.
-  Settled in review: only a `UserError` (unresolved approval) or a bug can raise there, so the
-  cancel is right. Nothing resumes a plan from its record today; that is backlog item 2.
+  Settled in review: only a `UserError` (unresolved deferral) or a bug can raise there, so the
+  cancel is right. A suspension does not raise; it settles the step (see "Suspension" below).
 - A fan-out gathers with `return_exceptions=True` so every item settles before the step does
   (`Runner.collect_items`). `_on_error='skip'` on a fan-out settles only the failed items to
   `None`; the step is `done` with a list. A whole-step skip (`skipped`, value `None`) is for a
   single call only. `try`/`except` does not accept a fan-out body.
-- `ApprovalRequired` / `CallDeferred` from a folded tool are resolved inline by
-  `HandleDeferredToolCalls` through the nested `ToolManager`. Without a handler they become a
-  `UserError` (`_Dispatcher`), as in harness `CodeMode`: approving `run_script` on resume rebuilds
-  the nested call with `tool_call_approved=False`, so it would raise again forever (proved
-  empirically before the change).
+- `CallDeferred` from a folded tool is resolved inline by `HandleDeferredToolCalls` through the
+  nested `ToolManager`. Without a handler it is a `UserError` (`_Dispatcher`), as in harness
+  `CodeMode`: the nested call is not one the model made, so its external result has no way back
+  in. (Before ADR 0004 `ApprovalRequired` took the same path; it now parks the run.)
 - A step value or the result may not hold a lambda or builtin reference, at any depth
   (`holds_function_value`). `to_jsonable_python` would otherwise serialize the closure's evaluator
   into the tool return and the record. Lambdas work inline (`sorted(xs, key=lambda ...)`).
@@ -198,6 +219,23 @@ the scheduler answer key and swap helper from the learning phase are redundant a
 - `_discovered_names` validates the search return leniently with two private `TypedDict`s, as the
   harness does: a malformed entry is skipped, a malformed catalog yields no names. The public
   `ToolSearchReturnContent` type would drop every name on one bad entry.
+- Suspension (ADR 0004). A parked step is in `settled` with status `suspended` but `Runner.bound`
+  says it binds nothing, so its dependents and any guard after it never become ready; `schedule`
+  returns instead of raising `PlanExecutionError` when pending steps remain and something is parked.
+  A `Suspend` payload travels on `ExecuteResult.suspensions` as `(step, item index or None,
+  payload)` and is never stored. `Runner.park` counts `suspend_attempts` on the record and turns the
+  attempt past `max_suspend_attempts` into a `CallError` through `Runner.recover`, the same path as
+  any failed call. A parked fan-out stores `ItemRecord`s (`done`, `skipped` with the error, or
+  `suspended`); `Runner.gather_items` re-dispatches only the `suspended` items and hands the others
+  back as their value or as a `CallError`, so `collect_items` treats reused and fresh items alike.
+  `parked_steps` shares `reusable_steps`' rule (same hash, every read step reused, no `input`).
+  A resolution reaches only a carried step (`step.name in Runner.carried`), and in a carried
+  fan-out only its `suspended` items; a parked step whose inputs changed runs from scratch,
+  unresolved, so nothing that never asked runs pre-approved (found by self-review, `1c9b299`).
+  `Dispatch` is now a `Protocol` with a keyword `resolution`; `_Dispatcher` maps `resolution is
+  True` to `handle_call(approved=True)` and `ApprovalRequired` to `Suspend({'tool', 'args',
+  'metadata'})`. `call_tool` resumes when `ctx.tool_call_approved` and the record has suspended
+  steps; it never reads `ctx.tool_call_metadata`. `CallDeferred` is still a `UserError`.
 
 ## Review findings (step 2, done 2026-09-03)
 
@@ -216,8 +254,32 @@ the description pointed at a catalog that was not there and the head said "liste
 (`e2d9840`). Two candidates were about the user's uncommitted Logfire work (see "Where things
 stand"). The rest are accepted below.
 
+Suspend and detach review (2026-09-04, `code-review` at `medium`, completed): ten findings.
+Fixed: a stale parked step from a denied script ran approved on a later script's approval
+(resolutions are now scoped to `Record.parked`, the steps the parking run surfaced); an approved
+re-run with no record silently re-ran every settled step and re-parked forever (now a `UserError`);
+a fan-out past `max_suspend_attempts` went through `recover` and lost its done items (now only the
+parked items fail and `collect_items` settles the rest); a park counted toward the limit in a run
+that ended in error and so asked nobody (counts commit only when the run surfaces the suspension);
+the count carried to a rewritten step with the same name (gated on `carried`); a stored count for a
+step absent from `steps` raised `KeyError` (guarded); the nested tool's own `ApprovalRequired`
+metadata was dropped from the approver's view (passed through as `metadata`); `parked_steps` took
+the `reused` dict instead of recomputing it; stale `UserError` prose in this file, the README, and
+the `schedule` docstring. Accepted, below.
+
 Known and accepted:
 
+- After a suspension only the resumed `run_script` returns, so its `ToolReturn` metadata holds the
+  parts of the re-dispatched calls only; the calls made before the park are not in message
+  history. The toolset is rebuilt per run and the record must hold data, so carrying parts across
+  would mean serializing message parts into the record. The parked calls are in the approval
+  request's metadata and every step's value is in the record; the README says so. Nested call ids
+  restart at `__1` on the resumed run; the parking run's ids never reached history, so nothing
+  collides.
+- Two dependent approval-gated calls take two approval rounds: the second cannot start until the
+  first resolves, so it parks on the resumed run. By design (a fence is a fence).
+- A parked entry for a step no longer in any plan stays `suspended` in the record, with its count,
+  until a script re-declares it. The record is the session.
 - Announcement is not filtered through the fold rules: a discovered tool that `tools=[...]`
   excludes is still announced as callable from `run_script`. The capability has no tool
   definition at announce time. Same in the harness; the next catalog is the source of truth.
@@ -251,15 +313,19 @@ Known and accepted:
 
 ## Next session: start here
 
-1. `cd pydantic-ai-scriptmode && git pull && uv sync --all-groups && make all`. Expect 174 passed.
-   `git status` will show the user's uncommitted Logfire work (see above); leave it.
-2. Backlog item 2, suspend and detach. ADR first, code only after the user's yes. Steps below.
-3. Process rule from this session: gate every commit on `make all` succeeding
+1. `cd pydantic-ai-scriptmode && git pull && uv sync --all-groups && make all`. Expect 190 passed.
+   `git status` will show the user's uncommitted Logfire work (see above); leave it. To commit a
+   change to `examples/tutor.py` without those hunks, apply the change to a copy of
+   `git show HEAD:examples/tutor.py`, `git hash-object -w` the copy, and
+   `git update-index --cacheinfo 100644,<sha>,examples/tutor.py`, as this session did.
+2. Backlog item 3, script-as-tool. ADR first (`docs/adr/0005-script-as-tool.md`), grill it, code
+   only after the user's yes. Read callscript's equivalent first if it has one (`packages/callscript/src/`).
+3. Process rule: gate every commit on `make all` succeeding
    (`make all > log && echo MAKE_OK || exit 1`, then `git commit`). Never chain a commit after a
    grep of the output. Run `code-review` at `medium`; if it hits the rate limit, verify its
-   candidate list by hand as the last two sessions did.
+   candidate list by hand.
 
-### Plan for item 2: suspend and detach
+### Plan for item 2: suspend and detach (done 2026-09-03; kept for the record)
 
 Goal, in glossary terms: a call that needs an approval parks the run instead of failing it. The
 record keeps every step that settled, the run's status is `suspended`, and the next `run_script`
@@ -412,9 +478,26 @@ task took a third request by the model's choice, not a retry: it wrote one scrip
 topics and mastery, then a second that fanned out `fetch_exercises` over a literal list of the
 three weak topic ids. One run each, so read that as variance, not as a cost of the flag.
 
+Suspend and detach (2026-09-03, `.local/tutor-suspend-1.txt`, task `reset`: reset mastery for every
+topic below 0.5, where `reset_mastery` needs approval). One run each:
+
+| Agent | Requests | Calls | What happened |
+| --- | --- | --- | --- |
+| plain tools | 4 | 11 | two `reset_mastery` calls deferred, approved, re-run |
+| script mode | 2 | 2 (see note) | one script; fan-out `resets` parked at items 0 and 1; one approval; only those two re-dispatched |
+
+The model wrote the script first time with no retry, put `_reason='score below 0.5'` on the
+parked call without being asked, and did not rewrite the script after approval (Pydantic AI
+re-issues the call, so the model never gets the chance; the description sentence is for the
+denial case). The approval metadata read as intended: intent plus the two parked items with tool,
+arguments, and reason. Note on the call count: the harness counts nested calls from the
+`run_script` return's metadata, and the parked `run_script` has no return, so the nine calls made
+before the park (one `list_topics`, eight `get_mastery`) are not counted; the true total is 11,
+the same as plain tools. Not fixed, since the harness is temporary.
+
 Trial transcripts: `.local/tutor-run-1.txt` (before) to `tutor-run-5.txt` (after),
 `.local/tutor-compare-1.txt` and `-2.txt` (plain against script), `.local/tutor-dynamic-1.txt` and
-`-2.txt` (flag on).
+`-2.txt` (flag on), `.local/tutor-suspend-1.txt` (approval).
 
 ### 4. Keep CONTEXT.md current
 
@@ -434,8 +517,8 @@ then `mattpocock-skills:tdd` for the code. One commit for the ADR, then commits 
 
 0. Bound through a derivation: done 2026-09-03 (`57517ff`).
 1. `dynamic_catalog`: done 2026-09-03 (`f52fe14` to `e2d9840`), ADR 0003.
-2. Suspend and detach: let a plan pause at an approval and resume from its record without
-   re-dispatching settled steps. Plan under "Next session"; ADR 0004 not yet written.
+2. Suspend and detach: built 2026-09-03 (`3a0fc05` onward), ADR 0004. Trial and review outstanding;
+   see "Next session".
 3. Script-as-tool: expose a saved plan as a native tool.
 4. Durable `RecordStore`: file or SQLite; the protocol already supports it (README example).
    Now cheap to do safely because records can no longer hold closures.
