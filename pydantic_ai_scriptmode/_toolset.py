@@ -103,7 +103,7 @@ _CATALOG_IN_INSTRUCTIONS = (
 )
 
 
-def _sanitize_tool_name(name: str) -> str:
+def sanitize_tool_name(name: str) -> str:
     safe = _INVALID_IDENT_CHARS.sub('_', name)
     if safe and safe[0].isdigit():
         safe = f'_{safe}'
@@ -343,7 +343,7 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
         sanitized_to_original: dict[str, str] = {}
         for name, tool in tools.items():
             td = tool.tool_def
-            safe = _sanitize_tool_name(name)
+            safe = sanitize_tool_name(name)
             if safe == RUN_SCRIPT_TOOL_NAME:
                 raise UserError(f"Tool name '{name}' conflicts with the script mode tool. Rename your tool.")
             if safe in callable_defs:

@@ -15,7 +15,10 @@ from typing_extensions import TypedDict
 
 from pydantic_ai_scriptmode._plan import Limits
 from pydantic_ai_scriptmode._record import InMemoryRecordStore, RecordStore
-from pydantic_ai_scriptmode._toolset import ScriptModeToolset
+from pydantic_ai_scriptmode._toolset import (  # pyright: ignore[reportPrivateUsage]
+    ScriptModeToolset,
+    sanitize_tool_name,
+)
 
 if TYPE_CHECKING:
     from pydantic_ai.capabilities.abstract import ValidatedToolArgs
@@ -119,12 +122,15 @@ class ScriptMode(AbstractCapability[AgentDepsT]):
         return response
 
     def _announce(self, ctx: RunContext[AgentDepsT], names: Sequence[str]) -> None:
-        """Enqueue one `SystemPromptPart` naming the tools not announced before in this run."""
+        """Enqueue one `SystemPromptPart` naming the tools not announced before in this run.
+
+        Names are given as a script calls them: `_fold` sanitizes `get-weather` to `get_weather`.
+        """
         fresh = [n for n in names if n not in self._announced_tools]
         if not fresh:
             return
         self._announced_tools.update(fresh)
-        listing = ', '.join(f'`{n}`' for n in fresh)
+        listing = ', '.join(f'`{sanitize_tool_name(n)}`' for n in fresh)
         # A mid-conversation `SystemPromptPart` renders inline on every provider, so it is cache-safe.
         ctx.enqueue(SystemPromptPart(content=f'{_ANNOUNCEMENT}: {listing}.'))
 

@@ -509,3 +509,9 @@ class TestDiscoveryAnnouncement:
         assert all('async def' not in d for d in descriptions)
         assert len({d for d in descriptions}) == 1
         assert '`weather`' in prompts[1]
+
+    async def test_announcement_names_the_callable_form(self):
+        cap = ScriptMode[None](dynamic_catalog=True)
+        ctx = run_context()
+        await announce_local(cap, ctx, {'discovered_tools': [{'name': 'get-weather'}, {'name': 'github.me'}]})
+        assert announcements(ctx) == [f'{ANNOUNCED}: `get_weather`, `github_me`.']
