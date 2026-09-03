@@ -58,9 +58,21 @@ without Pydantic AI (see "Using the engine directly").
    guard is a fence that waits for everything before it. Calls go through one `Dispatch` function,
    which is the only way a plan reaches a tool. Expressions are evaluated by a tree-walking
    interpreter with a shared node budget; there is no `eval`.
-4. **Record**. Every step settles to a `StepRecord` (done, skipped, error, or returned) keyed by name
-   and by a hash of its authored form. The `Record` is stored per conversation, even when the run
-   fails, so a corrected script reuses the steps that already settled.
+4. **Record**. Every step settles to a `StepRecord` (done, skipped, error, returned, or suspended)
+   keyed by name and by a hash of its authored form. The `Record` is stored per conversation, even
+   when the run fails or parks, so a corrected or resumed script reuses the steps that already settled.
+
+A call that needs an approval parks the run instead of failing it. If nothing resolved the
+`ApprovalRequired` inline, the step settles as `suspended`, the steps that do not depend on it keep
+running, and once nothing more can settle the record is saved and `run_script` itself raises
+`ApprovalRequired`. Its metadata lists the intent and every parked call with its tool, arguments,
+and `_reason`, so the approver sees what will run; one approval covers all of them. On the approved
+re-run Pydantic AI re-issues the same `run_script` call, and the engine re-dispatches only the parked
+steps, approved, with everything else reused from the record. A parked fan-out keeps its done items
+and re-dispatches only the parked ones. A denial is answered by Pydantic AI before the toolset sees
+it, so the parked steps stay parked and are asked again if a later script calls them; a step that
+parks more than `max_suspend_attempts` times fails instead, with an error the script's error branch
+can catch. A suspension never counts against `max_retries`.
 
 The catalog of folded tools is rebuilt every step, so a tool discovered mid-run by `ToolSearch` is
 callable from the next script either way. By default the catalog is rendered into the `run_script`
@@ -128,10 +140,11 @@ and `list.count`, and `dict.get`/`keys`/`values`/`items`. Every value stays JSON
 | `max_concurrency` | 5 | calls in flight at once, across steps and fan-out items |
 | `max_expression_nodes` | 100,000 | evaluation budget shared by every expression in one execution |
 | `max_result_bytes` | 10 MiB | size of one call's JSON-encoded result before it is refused |
+| `max_suspend_attempts` | 5 | times one step may park on an approval across runs before parking again fails it |
 
-The first three are checked at validation, before anything runs. The last three are enforced during
-execution. An oversized result fails the call, which the script's error branch may catch; a spent
-expression budget fails the step outright.
+The first three are checked at validation, before anything runs. The last four are enforced during
+execution. An oversized result or an exhausted suspend budget fails the call, which the script's
+error branch may catch; a spent expression budget fails the step outright.
 
 ### RecordStore
 
@@ -141,7 +154,7 @@ A store has two async methods keyed by `conversation_id`. Anything with this sha
 import json
 from dataclasses import asdict
 
-from pydantic_ai_scriptmode import Record, ScriptMode, StepRecord
+from pydantic_ai_scriptmode import ItemRecord, Record, ScriptMode, StepRecord
 
 
 class RedisRecordStore:
@@ -153,7 +166,10 @@ class RedisRecordStore:
         if raw is None:
             return None
         data = json.loads(raw)
-        steps = {name: StepRecord(**entry) for name, entry in data.pop('steps').items()}
+        steps: dict[str, StepRecord] = {}
+        for name, entry in data.pop('steps').items():
+            items = entry.pop('items')
+            steps[name] = StepRecord(**entry, items=None if items is None else [ItemRecord(**i) for i in items])
         return Record(steps=steps, **data)
 
     async def put(self, conversation_id: str, record: Record) -> None:
@@ -180,10 +196,12 @@ Each stage that rejects a script raises `ModelRetry`, so the model gets one mess
   a corrected script: a, b, c.` when any did. The corrected script should keep those steps unchanged.
 
 A tool that raises, returns `ModelRetry`, fails argument validation, or is denied becomes a
-`CallError` inside the engine, which the script's error branch can catch. `ApprovalRequired` and
-`CallDeferred` must be resolved inline by a `HandleDeferredToolCalls` capability, as in `CodeMode`:
-a nested call is not one the model made, so approving `run_script` on resume could never reach it.
-Without a handler the run fails with a `UserError` that says so.
+`CallError` inside the engine, which the script's error branch can catch. `ApprovalRequired` is
+resolved inline when a `HandleDeferredToolCalls` capability handles it, and otherwise parks the run
+as described under "How it works"; the agent then needs `DeferredToolRequests` among its output
+types, and Pydantic AI's own error says so when it is missing. `CallDeferred` must be resolved
+inline, as in `CodeMode`: a nested call is not one the model made, so its external result has no
+way back in. Without a handler the run fails with a `UserError` that says so.
 
 On success the tool returns `{'status': 'done' | 'returned', 'output': ...}`. The `ToolReturn`
 metadata carries `plan` (the plan as plain data), `tool_calls`, and `tool_returns` (the nested parts
@@ -191,8 +209,9 @@ per call), so a run can be audited without re-executing it.
 
 ## Using the engine directly
 
-The engine knows nothing about Pydantic AI. `dispatch` is any async callable taking a `CallStep` and
-its evaluated arguments.
+The engine knows nothing about Pydantic AI. `dispatch` is any async callable taking a `CallStep`,
+its evaluated arguments, and a keyword `resolution`, which is `None` unless the call was parked by a
+`Suspend` on an earlier execution and `execute_plan(resolutions={step: answer})` is re-entering it.
 
 ```python
 from pydantic_ai_scriptmode import CallStep, Limits, ToolSignature, compile_script, execute_plan, validate_plan
@@ -204,7 +223,7 @@ issues = validate_plan(
 assert not issues
 
 
-async def dispatch(step: CallStep, args: dict[str, object]) -> object:
+async def dispatch(step: CallStep, args: dict[str, object], *, resolution: object = None) -> object:
     return await my_tools[step.tool](**args)
 
 
