@@ -532,3 +532,26 @@ class TestDiscoveryAnnouncement:
         first = instructions[0]
         assert isinstance(first, InstructionPart) and first.content == 'crm rules'
         assert first.id is not None and 'crm' in str(first.id.source)
+
+    async def test_description_is_true_before_any_tool_is_folded(self):
+        toolset = ScriptModeToolset(wrapped=FunctionToolset(), dynamic_catalog=True)
+        description = (await toolset.get_tools(run_context()))[RUN_SCRIPT_TOOL_NAME].tool_def.description or ''
+        assert 'no tool is callable yet' in description
+        assert 'listed below' not in description
+
+    async def test_search_addendum_when_search_tools_is_native(self):
+        agent, _ = build_agent(extra=[ToolSearch()], dynamic_catalog=True)
+
+        @agent.tool_plain(defer_loading=True)
+        def later(x: int) -> int:
+            """Only reachable through search."""
+            return x
+
+        model = await describe(agent)
+        assert model.last_model_request_parameters is not None
+        tools = {t.name: t for t in model.last_model_request_parameters.function_tools}
+        assert 'Use `search_tools` to discover more' in (tools[RUN_SCRIPT_TOOL_NAME].description or '')
+        agent, _ = build_agent(dynamic_catalog=True)
+        model = await describe(agent)
+        assert model.last_model_request_parameters is not None
+        assert 'search_tools' not in (model.last_model_request_parameters.function_tools[0].description or '')

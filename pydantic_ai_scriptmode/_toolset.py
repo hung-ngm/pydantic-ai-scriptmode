@@ -44,8 +44,8 @@ _INVALID_IDENT_CHARS = re.compile(r'[^a-zA-Z0-9_]')
 _DESCRIPTION_HEAD = """\
 Run a short script of tool calls in one round trip.
 
-Write a Python-subset script. It is compiled to a plan of steps and executed against the tools \
-listed below; it is never run as Python, so only the shapes in this table are accepted:
+Write a Python-subset script. It is compiled to a plan of steps and executed against the tools in \
+its catalog; it is never run as Python, so only the shapes in this table are accepted:
 
 - a Python `#` comment stating the intent as the first line (never `//` or quotes; a docstring \
 also works)
@@ -99,8 +99,16 @@ _FUNCTIONS_HEADER = (
 )
 
 _CATALOG_IN_INSTRUCTIONS = (
-    'The tools callable from a script, with their signatures, are listed in the system instructions.'
+    'The tools callable from a script are listed, with their signatures, in the system instructions; '
+    'when nothing is listed there, no tool is callable yet.'
 )
+
+_SEARCH_ADDENDUM = (
+    'Not every tool may be in the catalog at first. Use `search_tools` to discover more; a discovered '
+    'tool is callable from the next `run_script`.'
+)
+
+_SEARCH_TOOLS_NAME = 'search_tools'
 
 
 def sanitize_tool_name(name: str) -> str:
@@ -251,6 +259,8 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
         else:
             description = self._description(callable_defs)
             self._last_catalog = ''
+        if _SEARCH_TOOLS_NAME in native:
+            description += '\n\n' + _SEARCH_ADDENDUM
         result: dict[str, ToolsetTool[AgentDepsT]] = dict(native)
         result[RUN_SCRIPT_TOOL_NAME] = _RunScriptTool(
             toolset=self,
