@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
-from pydantic_ai_scriptmode._plan import Plan, step_hash
+from pydantic_ai_scriptmode._plan import Plan, Step, step_hash
 
 StepStatus = Literal['done', 'skipped', 'error', 'returned', 'suspended']
 ItemStatus = Literal['done', 'skipped', 'suspended']
@@ -93,10 +93,31 @@ def reusable_steps(plan: Plan, record: Record | None) -> dict[str, StepRecord]:
         return reused
     for step in plan.steps:
         prior = record.steps.get(step.name)
-        if prior is None or prior.status not in ('done', 'skipped') or prior.hash != step_hash(step):
-            continue
-        references = step.references()
-        if 'input' in references or any(ref not in reused for ref in references):
-            continue
-        reused[step.name] = prior
+        if prior is not None and prior.status in ('done', 'skipped') and _same_step(step, prior, reused):
+            reused[step.name] = prior
     return reused
+
+
+def parked_steps(plan: Plan, record: Record | None) -> dict[str, StepRecord]:
+    """Suspended entries of `record` the plan re-enters: same name, same hash, every read step reused.
+
+    A parked step runs again, with the resolution if one was given, and a parked fan-out
+    re-dispatches only its parked items. The reuse rule for its inputs is the same as
+    `reusable_steps`, so the items it carries were produced from the inputs it will see.
+    """
+    parked: dict[str, StepRecord] = {}
+    if record is None:
+        return parked
+    reused = reusable_steps(plan, record)
+    for step in plan.steps:
+        prior = record.steps.get(step.name)
+        if prior is not None and prior.status == 'suspended' and _same_step(step, prior, reused):
+            parked[step.name] = prior
+    return parked
+
+
+def _same_step(step: Step, prior: StepRecord, reused: dict[str, StepRecord]) -> bool:
+    if prior.hash != step_hash(step):
+        return False
+    references = step.references()
+    return 'input' not in references and all(ref in reused for ref in references)

@@ -8,21 +8,25 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Coroutine, Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic_ai_scriptmode._expr import EvalError, Evaluator, NodeBudget, holds_function_value, parse_expression
 from pydantic_ai_scriptmode._plan import CallStep, DeriveStep, GuardStep, Limits, Plan, Step, step_hash
-from pydantic_ai_scriptmode._record import ItemRecord, Record, RunStatus, StepRecord, reusable_steps
+from pydantic_ai_scriptmode._record import ItemRecord, Record, RunStatus, StepRecord, parked_steps, reusable_steps
 
-Dispatch = Callable[[CallStep, dict[str, Any]], Awaitable[Any]]
-"""Performs one call of `step` with evaluated `args` and returns the tool's result.
 
-Raise `CallError` for a failure the script may handle with its error branch, or `Suspend` to park
-the call on a resolution it needs first. Any other exception propagates out of `execute_plan`
-untouched.
-"""
+class Dispatch(Protocol):
+    """Performs one call of `step` with evaluated `args` and returns the tool's result.
+
+    Raise `CallError` for a failure the script may handle with its error branch, or `Suspend` to
+    park the call on a resolution it needs first. Any other exception propagates out of
+    `execute_plan` untouched. `resolution` is `None` except when a parked call is re-dispatched
+    with the answer it waited for (`execute_plan(resolutions=...)`).
+    """
+
+    async def __call__(self, step: CallStep, args: dict[str, Any], *, resolution: Any = None) -> Any: ...
 
 
 def _as_list(value: Any) -> list[Any] | None:
@@ -89,6 +93,10 @@ class Runner:
     limits: Limits
     env: dict[str, Any]
     settled: dict[str, StepRecord] = field(default_factory=dict[str, StepRecord])
+    carried: dict[str, StepRecord] = field(default_factory=dict[str, StepRecord])
+    """Parked entries from the prior record, by step name: a fan-out re-dispatches only their parked items."""
+    resolutions: dict[str, Any] = field(default_factory=dict[str, Any])
+    """The answer a parked step waited for, by step name, passed to `dispatch` when it runs again."""
     halt: tuple[RunStatus, str, Any] | None = None
     """`(status, step name, value or error message)` once a guard fired or a step failed."""
     suspensions: dict[str, list[tuple[int | None, Any]]] = field(
@@ -165,9 +173,10 @@ class Runner:
             self.fail(step, str(e))
 
     async def run_call(self, step: CallStep) -> None:
+        resolution = self.resolutions.get(step.name)
         try:
             if step.each is None:
-                value = await self.call_once(step, self.eval_args(step, self.env))
+                value = await self.call_once(step, self.eval_args(step, self.env), resolution)
             else:
                 items = _as_list(self.eval(step.each))
                 if items is None:
@@ -178,8 +187,8 @@ class Runner:
                     )
                 assert step.each_var is not None
                 scopes: list[dict[str, Any]] = [{**self.env, step.each_var: item} for item in items]
-                calls = [self.call_once(step, self.eval_args(step, scope)) for scope in scopes]
-                value = self.collect_items(step, await asyncio.gather(*calls, return_exceptions=True))
+                calls = [self.call_once(step, self.eval_args(step, scope), resolution) for scope in scopes]
+                value = self.collect_items(step, await self.gather_items(step, calls))
         except Suspend as e:
             self.park(step, [(None, e.payload)])
             return
@@ -198,6 +207,32 @@ class Runner:
                 self.fail(step, str(e))
             return
         self.settle(step, 'done', value)
+
+    async def gather_items(self, step: CallStep, calls: Sequence[Coroutine[Any, Any, Any]]) -> list[Any]:
+        """Await every item, or on a re-entered fan-out only the parked ones; the rest come from the record.
+
+        A settled item comes back as its value, or as the `CallError` it failed with, so
+        `collect_items` treats reused and fresh items alike. The carried items apply only when
+        they line up with the list being fanned out; otherwise every item runs.
+        """
+        prior = self.carried.get(step.name)
+        if prior is None or prior.items is None or len(prior.items) != len(calls):
+            return await asyncio.gather(*calls, return_exceptions=True)
+        results: list[Any] = []
+        fresh: list[tuple[int, Coroutine[Any, Any, Any]]] = []
+        for index, (item, call) in enumerate(zip(prior.items, calls, strict=True)):
+            if item.status == 'suspended':
+                results.append(None)
+                fresh.append((index, call))
+            elif item.status == 'skipped':
+                results.append(CallError(item.error or ''))
+                call.close()
+            else:
+                results.append(item.value)
+                call.close()
+        for (index, _), result in zip(fresh, await asyncio.gather(*(c for _, c in fresh), return_exceptions=True)):
+            results[index] = result
+        return results
 
     def collect_items(self, step: CallStep, results: list[Any]) -> list[Any]:
         """Turn a fan-out's gathered results into the step value, once every item has settled.
@@ -228,9 +263,9 @@ class Runner:
             raise _ItemsParked(parked, items)
         return [None if isinstance(r, BaseException) else r for r in results]
 
-    async def call_once(self, step: CallStep, args: dict[str, Any]) -> Any:
+    async def call_once(self, step: CallStep, args: dict[str, Any], resolution: Any = None) -> Any:
         async with self.semaphore:
-            result = await self.dispatch(step, args)
+            result = await self.dispatch(step, args, resolution=resolution)
         size = len(json.dumps(result, default=str))
         if size > self.limits.max_result_bytes:
             raise CallError(
@@ -315,13 +350,26 @@ async def execute_plan(
     limits: Limits | None = None,
     record: Record | None = None,
     input: Any = None,
+    resolutions: dict[str, Any] | None = None,
 ) -> ExecuteResult:
-    """Execute `plan`, reusing settled steps from `record`, and return the outcome with a new record."""
+    """Execute `plan`, reusing settled steps from `record`, and return the outcome with a new record.
+
+    A step the record holds as `suspended` runs again; `resolutions` maps such a step's name to the
+    answer it waited for, handed to `dispatch` as `resolution`.
+    """
     limits = limits or Limits()
     reused = reusable_steps(plan, record)
     env: dict[str, Any] = {'input': input}
     env.update({name: entry.value for name, entry in reused.items()})
-    runner = Runner(plan=plan, dispatch=dispatch, limits=limits, env=env, settled=dict(reused))
+    runner = Runner(
+        plan=plan,
+        dispatch=dispatch,
+        limits=limits,
+        env=env,
+        settled=dict(reused),
+        carried=parked_steps(plan, record),
+        resolutions=dict(resolutions or {}),
+    )
     await runner.schedule()
 
     status: RunStatus = 'done'

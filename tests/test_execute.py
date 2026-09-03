@@ -19,11 +19,13 @@ class FakeTools:
     def __init__(self, **tools: Any) -> None:
         self.tools = tools
         self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.resolutions: list[Any] = []
         self.in_flight = 0
         self.max_in_flight = 0
 
-    async def __call__(self, step: CallStep, args: dict[str, Any]) -> Any:
+    async def __call__(self, step: CallStep, args: dict[str, Any], *, resolution: Any = None) -> Any:
         self.calls.append((step.tool, args))
+        self.resolutions.append(resolution)
         self.in_flight += 1
         self.max_in_flight = max(self.max_in_flight, self.in_flight)
         try:
@@ -267,3 +269,35 @@ class TestSuspend:
         result = await run('xs = await xs()\nys = [await f(k=x) for x in xs[:2]]', FakeTools(xs=[1, 2], f=f))
         assert result.status == 'error' and result.at == 'ys' and result.error == 'boom'
         assert result.record.steps['ys'].items is None
+
+    async def test_resume_re_dispatches_only_the_parked_call_with_the_resolution(self):
+        tools = FakeTools(f='a', g=Suspend('ask'), h=lambda k: k + '?')  # pyright: ignore[reportUnknownLambdaType]
+        source = 'x, y = await asyncio.gather(f(k=1), g(k=2))\nz = await h(k=y)\nreturn [x, z]'
+        parked = await run(source, tools)
+        assert parked.status == 'suspended'
+        # Without a resolution the parked step is a re-entry point: it is asked again, unresolved.
+        again = await run(source, tools, record=parked.record)
+        assert again.status == 'suspended' and again.suspensions == [('y', None, 'ask')]
+        tools.tools['g'] = 'b'
+        resumed = await run(source, tools, record=again.record, resolutions={'y': True})
+        assert resumed.status == 'done' and resumed.output == ['a', 'b?']
+        assert [c[0] for c in tools.calls] == ['f', 'g', 'g', 'g', 'h']
+        assert tools.resolutions == [None, None, None, True, None]
+        assert resumed.record.steps['y'].status == 'done' and resumed.record.status == 'done'
+
+    async def test_resume_re_dispatches_only_the_parked_items(self):
+        def f(k: int) -> int:
+            if k == 2:
+                raise Suspend({'k': k})
+            if k == 3:
+                raise CallError('boom')
+            return k * 10
+
+        tools = FakeTools(xs=[1, 2, 3, 4], f=f)
+        source = "xs = await xs()\nys = [await f(k=x, _on_error='skip') for x in xs[:4]]\nreturn ys"
+        parked = await run(source, tools)
+        tools.tools['f'] = lambda k: k * 100  # pyright: ignore[reportUnknownLambdaType]
+        resumed = await run(source, tools, record=parked.record, resolutions={'ys': True})
+        assert resumed.status == 'done' and resumed.output == [10, 200, None, 40]
+        assert tools.calls[5:] == [('f', {'k': 2})] and tools.resolutions[5:] == [True]
+        assert resumed.record.steps['ys'].items is None

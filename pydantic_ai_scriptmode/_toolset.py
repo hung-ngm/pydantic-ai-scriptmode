@@ -164,7 +164,7 @@ class _Dispatcher:
     calls: dict[str, ToolCallPart] = field(default_factory=dict[str, ToolCallPart])
     returns: dict[str, ToolReturnPart] = field(default_factory=dict[str, ToolReturnPart])
 
-    async def __call__(self, step: CallStep, args: dict[str, Any]) -> Any:
+    async def __call__(self, step: CallStep, args: dict[str, Any], *, resolution: Any = None) -> Any:
         original = self.sanitized_to_original.get(step.tool, step.tool)
         call_id = f'{self.parent_id}__{len(self.calls) + 1}'
         part = ToolCallPart(tool_name=original, args=args, tool_call_id=call_id)
