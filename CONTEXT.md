@@ -81,3 +81,11 @@ _Avoid_: executor, handler, backend
 **Teaching copy**:
 The message for one rejection kind that tells the model the right spelling, not only what was wrong.
 _Avoid_: error message, hint
+
+**Suspension**:
+A call parked on an approval it did not get, so the run stops there and the record keeps everything that settled.
+_Avoid_: pause, deferral, interrupt
+
+**Resolution**:
+The answer that lets a parked call dispatch again: today only the approval.
+_Avoid_: resume value, callback, response
