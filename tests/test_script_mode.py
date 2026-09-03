@@ -93,7 +93,7 @@ def build_approval_agent(
         else:
             seen.append((n, ctx.tool_call_approved))
         if not ctx.tool_call_approved and (parks_on is None or n == parks_on):
-            raise ApprovalRequired
+            raise ApprovalRequired(metadata=None if parks_on is None else {'n': n})
         return n
 
     return agent, seen
@@ -244,7 +244,9 @@ class TestScriptMode:
         assert requests.metadata[call.tool_call_id] == {
             'script_mode': True,
             'intent': None,
-            'suspended': [{'step': 'x', 'item': None, 'tool': 'danger', 'args': {'n': 1}, 'reason': 'needed'}],
+            'suspended': [
+                {'step': 'x', 'item': None, 'tool': 'danger', 'args': {'n': 1}, 'reason': 'needed', 'metadata': None}
+            ],
         }
         assert seen == [False]
 
@@ -274,7 +276,7 @@ class TestScriptMode:
         assert isinstance(first.output, DeferredToolRequests)
         call = first.output.approvals[0]
         assert first.output.metadata[call.tool_call_id]['suspended'] == [
-            {'step': 'ys', 'item': 1, 'tool': 'danger', 'args': {'n': 2}, 'reason': None}
+            {'step': 'ys', 'item': 1, 'tool': 'danger', 'args': {'n': 2}, 'reason': None, 'metadata': {'n': 2}}
         ]
         resumed = await agent.run(
             message_history=first.all_messages(),
@@ -282,6 +284,74 @@ class TestScriptMode:
         )
         assert resumed.output == "{'status': 'done', 'output': [1, 2, 3]}"
         assert seen == [(1, False), (2, False), (3, False), (2, True)]
+
+    async def test_an_approval_covers_only_the_calls_it_was_asked_for(self):
+        """A parked step from a denied script must not run approved on a later script's approval."""
+        seen: list[tuple[str, bool]] = []
+        scripts = [
+            'y = await mild(n=1)\nx = await danger(n=1)\nreturn x',
+            'y = await needs(n=1)\nx = await danger(n=1)\nreturn x',
+        ]
+
+        async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            if scripts:
+                return ModelResponse(parts=[ToolCallPart(RUN_SCRIPT_TOOL_NAME, {'script': scripts.pop(0)})])
+            last = messages[-1].parts[-1]
+            assert isinstance(last, ToolReturnPart)
+            return ModelResponse(parts=[TextPart(str(last.content))])
+
+        agent = Agent(
+            FunctionModel(model),
+            deps_type=type(None),
+            output_type=[str, DeferredToolRequests],
+            capabilities=[ScriptMode[None]()],
+        )
+
+        def gated(name: str) -> None:
+            async def tool(ctx: RunContext[None], n: int) -> int:
+                seen.append((name, ctx.tool_call_approved))
+                if not ctx.tool_call_approved:
+                    raise ApprovalRequired
+                return n
+
+            tool.__name__ = name
+            agent.tool(tool)
+
+        @agent.tool_plain
+        async def mild(n: int) -> int:
+            return n
+
+        gated('needs')
+        gated('danger')
+
+        first = await agent.run('go')
+        assert isinstance(first.output, DeferredToolRequests)
+        denied = await agent.run(
+            message_history=first.all_messages(),
+            deferred_tool_results=DeferredToolResults(approvals={first.output.approvals[0].tool_call_id: False}),
+        )
+        assert isinstance(denied.output, DeferredToolRequests)
+        call = denied.output.approvals[0]
+        assert [e['tool'] for e in denied.output.metadata[call.tool_call_id]['suspended']] == ['needs']
+        approved = await agent.run(
+            message_history=denied.all_messages(),
+            deferred_tool_results=DeferredToolResults(approvals={call.tool_call_id: True}),
+        )
+        # `needs` ran approved; `danger`, parked by the denied script, was asked again, not run.
+        assert isinstance(approved.output, DeferredToolRequests)
+        assert seen == [('danger', False), ('needs', False), ('needs', True), ('danger', False)]
+
+    async def test_an_approved_re_run_with_no_record_is_a_user_error(self):
+        agent, _ = build_approval_agent('x = await danger(n=1)\nreturn x')
+        first = await agent.run('go')
+        assert isinstance(first.output, DeferredToolRequests)
+        call_id = first.output.approvals[0].tool_call_id
+        fresh, _ = build_approval_agent()  # a different store: the record is gone
+        with pytest.raises(UserError, match='no record'):
+            await fresh.run(
+                message_history=first.all_messages(),
+                deferred_tool_results=DeferredToolResults(approvals={call_id: True}),
+            )
 
     async def test_function_in_result_is_a_retry(self):
         agent, _ = build_agent("issues = await list_issues(repo='api')\nreturn [len]", 'x = 1')

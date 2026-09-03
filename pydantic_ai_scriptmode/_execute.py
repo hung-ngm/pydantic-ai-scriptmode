@@ -295,16 +295,34 @@ class Runner:
             self.env[step.name] = value
 
     def park(self, step: CallStep, parked: list[tuple[int | None, Any]], items: list[ItemRecord] | None = None) -> None:
-        """Settle `step` as parked, unless it has parked `max_suspend_attempts` times already; then it fails."""
-        attempts = self.suspend_attempts.get(step.name, 0) + 1
+        """Settle `step` as parked, unless it has parked `max_suspend_attempts` times already; then the parked calls fail.
+
+        The count carries over only for a step the plan re-enters unchanged (`carried`); a rewritten
+        step starts its own. Past the limit a single call fails as any call does, and a fan-out
+        fails only its parked items, keeping the done siblings, then settles as `collect_items` says.
+        """
+        prior = self.suspend_attempts.get(step.name, 0) if step.name in self.carried else 0
+        attempts = prior + 1
         if attempts > self.limits.max_suspend_attempts:
-            self.recover(
-                step,
-                CallError(
-                    f'`{step.tool}` asked for a resolution {attempts} times, more than the limit of '
-                    f'{self.limits.max_suspend_attempts}'
-                ),
+            over = CallError(
+                f'`{step.tool}` asked for a resolution {attempts} times, more than the limit of '
+                f'{self.limits.max_suspend_attempts}'
             )
+            if items is None:
+                self.recover(step, over)
+                return
+            results = [
+                over
+                if item.status == 'suspended'
+                else CallError(item.error or '')
+                if item.status == 'skipped'
+                else item.value
+                for item in items
+            ]
+            try:
+                self.settle(step, 'done', self.collect_items(step, results))
+            except CallError as e:
+                self.recover(step, e)
             return
         self.suspend_attempts[step.name] = attempts
         self.suspensions[step.name] = parked
@@ -326,9 +344,9 @@ class Runner:
 
         - Only `ready_steps()` may start. It already encodes data edges, `after` edges, and
           guard fences; the loop just skips steps that are already in flight.
-        - `run_step` sets `self.halt` for script-level failures and raises only for signals
-          that must escape (approval, deferral) or bugs. Those propagate after the other
-          in-flight tasks are cancelled, so no orphan task outlives the run.
+        - `run_step` sets `self.halt` for script-level failures, settles a parked step as
+          `suspended`, and raises only for signals that must escape (deferral) or bugs. Those
+          propagate after the other in-flight tasks are cancelled, so no orphan task outlives the run.
         - A halt stops new launches but lets in-flight steps settle, so the record holds what
           their tools actually did. Cancelling them would leave a call half-done on the tool's
           side with no trace in the record.
@@ -379,15 +397,16 @@ async def execute_plan(
     reused = reusable_steps(plan, record)
     env: dict[str, Any] = {'input': input}
     env.update({name: entry.value for name, entry in reused.items()})
+    prior_attempts = dict(record.suspend_attempts) if record is not None else {}
     runner = Runner(
         plan=plan,
         dispatch=dispatch,
         limits=limits,
         env=env,
         settled=dict(reused),
-        carried=parked_steps(plan, record),
+        carried=parked_steps(plan, record, reused),
         resolutions=dict(resolutions or {}),
-        suspend_attempts=dict(record.suspend_attempts) if record is not None else {},
+        suspend_attempts=dict(prior_attempts),
     )
     await runner.schedule()
 
@@ -420,6 +439,9 @@ async def execute_plan(
 
     steps = dict(record.steps) if record is not None else {}
     steps.update(runner.settled)
-    attempts = {name: n for name, n in runner.suspend_attempts.items() if steps[name].status == 'suspended'}
-    new_record = Record(steps=steps, status=status, at=at, output=output, suspend_attempts=attempts)
+    # A park counts only when the run surfaces it: a run that failed elsewhere asked nobody.
+    counted = runner.suspend_attempts if status == 'suspended' else prior_attempts
+    attempts = {name: n for name, n in counted.items() if name in steps and steps[name].status == 'suspended'}
+    parked = list(dict.fromkeys(name for name, _, _ in suspensions))
+    new_record = Record(steps=steps, status=status, at=at, output=output, suspend_attempts=attempts, parked=parked)
     return ExecuteResult(status=status, output=output, record=new_record, at=at, error=error, suspensions=suspensions)

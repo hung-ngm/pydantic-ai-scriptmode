@@ -157,7 +157,14 @@ def _suspension_metadata(plan: Plan, outcome: ExecuteResult) -> dict[str, Any]:
         step = steps[name]
         reason = step.reason if isinstance(step, CallStep) else None
         suspended.append(
-            {'step': name, 'item': item, 'tool': payload['tool'], 'args': payload['args'], 'reason': reason}
+            {
+                'step': name,
+                'item': item,
+                'tool': payload['tool'],
+                'args': payload['args'],
+                'reason': reason,
+                'metadata': payload['metadata'],
+            }
         )
     return {'script_mode': True, 'intent': plan.intent, 'suspended': suspended}
 
@@ -358,8 +365,17 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
         # The approved re-run resumes from the record, not from `ctx.tool_call_metadata`: Pydantic AI
         # echoes metadata back only when the caller copies it into `DeferredToolResults`.
         resolutions: dict[str, Any] = {}
-        if ctx.tool_call_approved and record is not None:
-            resolutions = {name: True for name, entry in record.steps.items() if entry.status == 'suspended'}
+        if ctx.tool_call_approved:
+            if record is None:
+                raise UserError(
+                    'run_script was approved, but the conversation has no record to resume from. The record '
+                    'store must be shared by the run that parked and the run that resumes; the default '
+                    'InMemoryRecordStore lives in one process.'
+                )
+            # Only what the approver was shown: the steps the parking run surfaced, not every parked
+            # entry the conversation record still holds (a step parked by a denied script stays parked
+            # and is asked again).
+            resolutions = {name: True for name in record.parked}
         outcome = await execute_plan(
             plan, dispatch=dispatch, limits=self.limits, record=record, resolutions=resolutions
         )

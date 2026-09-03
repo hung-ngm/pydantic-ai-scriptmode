@@ -205,7 +205,9 @@ way back in. Without a handler the run fails with a `UserError` that says so.
 
 On success the tool returns `{'status': 'done' | 'returned', 'output': ...}`. The `ToolReturn`
 metadata carries `plan` (the plan as plain data), `tool_calls`, and `tool_returns` (the nested parts
-per call), so a run can be audited without re-executing it.
+per call), so a run can be audited without re-executing it. After a suspension only the resumed
+run returns, so its metadata holds the parts of the re-dispatched calls; the calls made before the
+park are in the approval request's metadata (the parked ones) and in the record (every step's value).
 
 ## Using the engine directly
 

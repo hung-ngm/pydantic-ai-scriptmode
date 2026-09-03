@@ -52,6 +52,8 @@ class Record:
     output: Any = None
     suspend_attempts: dict[str, int] = field(default_factory=dict[str, int])
     """Times each step has parked, by name, while it is still parked; cleared when it settles otherwise."""
+    parked: list[str] = field(default_factory=list[str])
+    """The steps whose suspension the last run surfaced, in plan order; only these may take a resolution."""
 
 
 class RecordStore(Protocol):
@@ -100,17 +102,16 @@ def reusable_steps(plan: Plan, record: Record | None) -> dict[str, StepRecord]:
     return reused
 
 
-def parked_steps(plan: Plan, record: Record | None) -> dict[str, StepRecord]:
-    """Suspended entries of `record` the plan re-enters: same name, same hash, every read step reused.
+def parked_steps(plan: Plan, record: Record | None, reused: dict[str, StepRecord]) -> dict[str, StepRecord]:
+    """Suspended entries of `record` the plan re-enters: same name, same hash, every read step in `reused`.
 
     A parked step runs again, with the resolution if one was given, and a parked fan-out
-    re-dispatches only its parked items. The reuse rule for its inputs is the same as
-    `reusable_steps`, so the items it carries were produced from the inputs it will see.
+    re-dispatches only its parked items. `reused` is `reusable_steps(plan, record)`, the same rule
+    for its inputs, so the items it carries were produced from the inputs it will see.
     """
     parked: dict[str, StepRecord] = {}
     if record is None:
         return parked
-    reused = reusable_steps(plan, record)
     for step in plan.steps:
         prior = record.steps.get(step.name)
         if prior is not None and prior.status == 'suspended' and _same_step(step, prior, reused):

@@ -233,6 +233,7 @@ class TestSuspend:
         assert result.suspensions == [('y', None, {'ask': 'ok?'})]
         steps = result.record.steps
         assert steps['y'].status == 'suspended' and result.record.status == 'suspended'
+        assert result.record.parked == ['y']
         assert steps['x'].value == 'a' and steps['w'].value == 'a!'
         assert 'z' not in steps
         assert [c[0] for c in tools.calls] == ['f', 'g']
@@ -331,3 +332,41 @@ class TestSuspend:
         rerun = await run(source.replace('xs()', 'xs(v=2)'), tools, record=parked.record, resolutions={'ys': True})
         assert rerun.status == 'suspended' and rerun.suspensions == [('ys', 1, {'k': 2})]
         assert [c[0] for c in tools.calls[4:]] == ['xs', 'f', 'f', 'f'] and tools.resolutions[5:] == [None, None, None]
+
+    async def test_a_fan_out_past_max_suspend_attempts_keeps_its_done_siblings(self):
+        def f(k: int) -> int:
+            if k == 2:
+                raise Suspend({'k': k})
+            return k * 10
+
+        tools = FakeTools(xs=[1, 2, 3], f=f)
+        source = "xs = await xs()\nys = [await f(k=x, _on_error='skip') for x in xs[:3]]\nreturn len(ys)"
+        record = None
+        for _ in range(2):
+            outcome = await run(source, tools, record=record, limits=Limits(max_suspend_attempts=2))
+            record = outcome.record
+        third = await run(source, tools, record=record, limits=Limits(max_suspend_attempts=2))
+        assert third.status == 'done' and third.output == 3
+        assert third.record.steps['ys'].value == [10, None, 30] and third.record.parked == []
+        assert [c[0] for c in tools.calls] == ['xs', 'f', 'f', 'f', 'f', 'f']
+
+    async def test_a_park_counts_only_when_the_run_surfaces_it(self):
+        tools = FakeTools(a=Suspend('ask'), b=CallError('down'))
+        source = 'x, y = await asyncio.gather(a(k=1), b(k=2))\nreturn [x, y]'
+        first = await run(source, tools, limits=Limits(max_suspend_attempts=1))
+        assert first.status == 'error' and first.record.steps['x'].status == 'suspended'
+        assert first.record.suspend_attempts == {} and first.record.parked == []
+        tools.tools['b'] = 'ok'
+        second = await run(source, tools, record=first.record, limits=Limits(max_suspend_attempts=1))
+        assert second.status == 'suspended' and second.record.suspend_attempts == {'x': 1}
+
+    async def test_a_rewritten_step_starts_its_own_park_count(self):
+        tools = FakeTools(g=Suspend('ask'))
+        first = await run('y = await g(k=1)', tools, limits=Limits(max_suspend_attempts=1))
+        second = await run('y = await g(k=2)', tools, record=first.record, limits=Limits(max_suspend_attempts=1))
+        assert second.status == 'suspended' and second.record.suspend_attempts == {'y': 1}
+
+    async def test_a_stored_count_for_an_absent_step_is_dropped(self):
+        record = Record(suspend_attempts={'gone': 3})
+        result = await run('x = await f(k=1)', FakeTools(f=1), record=record)
+        assert result.status == 'done' and result.record.suspend_attempts == {}
