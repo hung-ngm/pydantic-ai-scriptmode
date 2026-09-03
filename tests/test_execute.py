@@ -8,7 +8,7 @@ import pytest
 from pydantic_ai_scriptmode._compile import compile_script
 from pydantic_ai_scriptmode._execute import CallError, PlanExecutionError, Suspend, execute_plan
 from pydantic_ai_scriptmode._plan import CallStep, DeriveStep, Limits, Plan, step_hash
-from pydantic_ai_scriptmode._record import Record, StepRecord, reusable_steps
+from pydantic_ai_scriptmode._record import ItemRecord, Record, StepRecord, reusable_steps
 
 pytestmark = pytest.mark.anyio
 
@@ -235,3 +235,35 @@ class TestSuspend:
         assert 'z' not in steps
         assert [c[0] for c in tools.calls] == ['f', 'g']
         assert set(reusable_steps(compile_script('y = await g(k=2)'), result.record)) == set()
+
+    async def test_fanout_with_a_parked_item_keeps_its_done_siblings(self):
+        def f(k: int) -> int:
+            if k == 2:
+                raise Suspend({'k': k})
+            if k == 3:
+                raise CallError('boom')
+            return k * 10
+
+        tools = FakeTools(xs=[1, 2, 3, 4], f=f)
+        result = await run("xs = await xs()\nys = [await f(k=x, _on_error='skip') for x in xs[:4]]", tools)
+        assert result.status == 'suspended' and result.at == 'ys'
+        assert result.suspensions == [('ys', 1, {'k': 2})]
+        ys = result.record.steps['ys']
+        assert ys.status == 'suspended' and ys.value is None
+        assert ys.items == [
+            ItemRecord('done', 10),
+            ItemRecord('suspended'),
+            ItemRecord('skipped', error='boom'),
+            ItemRecord('done', 40),
+        ]
+        assert len(tools.calls) == 5
+
+    async def test_fanout_item_failure_wins_over_a_parked_item(self):
+        def f(k: int) -> int:
+            if k == 2:
+                raise Suspend({'k': k})
+            raise CallError('boom')
+
+        result = await run('xs = await xs()\nys = [await f(k=x) for x in xs[:2]]', FakeTools(xs=[1, 2], f=f))
+        assert result.status == 'error' and result.at == 'ys' and result.error == 'boom'
+        assert result.record.steps['ys'].items is None

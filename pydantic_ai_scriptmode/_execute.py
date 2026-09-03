@@ -14,7 +14,7 @@ from typing import Any
 
 from pydantic_ai_scriptmode._expr import EvalError, Evaluator, NodeBudget, holds_function_value, parse_expression
 from pydantic_ai_scriptmode._plan import CallStep, DeriveStep, GuardStep, Limits, Plan, Step, step_hash
-from pydantic_ai_scriptmode._record import Record, RunStatus, StepRecord, reusable_steps
+from pydantic_ai_scriptmode._record import ItemRecord, Record, RunStatus, StepRecord, reusable_steps
 
 Dispatch = Callable[[CallStep, dict[str, Any]], Awaitable[Any]]
 """Performs one call of `step` with evaluated `args` and returns the tool's result.
@@ -47,6 +47,15 @@ class Suspend(Exception):
 
 Suspension = tuple[str, int | None, Any]
 """`(step name, fan-out item index or None, payload)` for one parked call."""
+
+
+class _ItemsParked(Exception):
+    """Raised by `collect_items` when a fan-out has a parked item: the step settles `suspended` with `items`."""
+
+    def __init__(self, parked: list[tuple[int | None, Any]], items: list[ItemRecord]) -> None:
+        super().__init__('items parked')
+        self.parked = parked
+        self.items = items
 
 
 class PlanExecutionError(Exception):
@@ -172,8 +181,10 @@ class Runner:
                 calls = [self.call_once(step, self.eval_args(step, scope)) for scope in scopes]
                 value = self.collect_items(step, await asyncio.gather(*calls, return_exceptions=True))
         except Suspend as e:
-            self.suspensions[step.name] = [(None, e.payload)]
-            self.settle(step, 'suspended')
+            self.park(step, [(None, e.payload)])
+            return
+        except _ItemsParked as e:
+            self.park(step, e.parked, e.items)
             return
         except CallError as e:
             if step.fallback is not None:
@@ -193,19 +204,29 @@ class Runner:
 
         Gathering with `return_exceptions` is what lets every item finish: without it the first
         failure would settle the step while its siblings kept calling tools that nothing awaited.
-        A signal that must escape (approval, deferral, bug) wins over a `CallError`. With
-        `_on_error='skip'` a failed item settles to `None` and the others keep their values;
-        otherwise the first failure is the step's failure.
+        A signal that must escape (deferral, bug) wins over a `CallError`, and a `CallError`
+        without `_on_error='skip'` wins over a parked item. With `skip` a failed item settles to
+        `None` and the others keep their values. A parked item parks the step with every item's
+        outcome recorded, so a resume re-dispatches only the parked ones.
         """
-        failures = [r for r in results if isinstance(r, BaseException)]
+        failures = [r for r in results if isinstance(r, BaseException) and not isinstance(r, Suspend)]
         for failure in failures:
             if not isinstance(failure, CallError):
                 raise failure
-        if failures and step.on_error == 'skip':
-            return [None if isinstance(r, BaseException) else r for r in results]
-        if failures:
-            raise failures[0]
-        return list(results)
+        if failures and step.on_error != 'skip':
+            raise failures[0]  # an error wins over a parked sibling
+        parked: list[tuple[int | None, Any]] = [(i, r.payload) for i, r in enumerate(results) if isinstance(r, Suspend)]
+        if parked:
+            items = [
+                ItemRecord('suspended')
+                if isinstance(r, Suspend)
+                else ItemRecord('skipped', error=str(r))
+                if isinstance(r, BaseException)
+                else ItemRecord('done', r)
+                for r in results
+            ]
+            raise _ItemsParked(parked, items)
+        return [None if isinstance(r, BaseException) else r for r in results]
 
     async def call_once(self, step: CallStep, args: dict[str, Any]) -> Any:
         async with self.semaphore:
@@ -231,6 +252,11 @@ class Runner:
         self.settled[step.name] = StepRecord(hash=step_hash(step), status=status, value=value, error=error)  # pyright: ignore[reportArgumentType]
         if status in ('done', 'skipped'):
             self.env[step.name] = value
+
+    def park(self, step: Step, parked: list[tuple[int | None, Any]], items: list[ItemRecord] | None = None) -> None:
+        self.suspensions[step.name] = parked
+        self.settle(step, 'suspended')
+        self.settled[step.name].items = items
 
     def fail(self, step: Step, message: str) -> None:
         self.settle(step, 'error', error=message)

@@ -8,7 +8,21 @@ from typing import Any, Literal, Protocol
 from pydantic_ai_scriptmode._plan import Plan, step_hash
 
 StepStatus = Literal['done', 'skipped', 'error', 'returned', 'suspended']
+ItemStatus = Literal['done', 'skipped', 'suspended']
 RunStatus = Literal['done', 'returned', 'error', 'suspended']
+
+
+@dataclass
+class ItemRecord:
+    """One fan-out item's outcome, kept while the step is parked so a resume re-dispatches only the parked items.
+
+    An item that failed is `skipped` (the step had `_on_error='skip'`; otherwise the step failed
+    and nothing is kept). A failed item's message is in `error`.
+    """
+
+    status: ItemStatus
+    value: Any = None
+    error: str | None = None
 
 
 @dataclass
@@ -23,6 +37,8 @@ class StepRecord:
     status: StepStatus
     value: Any = None
     error: str | None = None
+    items: list[ItemRecord] | None = None
+    """Per-item outcomes of a parked fan-out; `None` for anything else."""
 
 
 @dataclass
