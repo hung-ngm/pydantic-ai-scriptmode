@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from pydantic_ai import AbstractToolset, Agent, RunContext, ToolDefinition
+from pydantic_ai import AbstractToolset, Agent, DeferredToolRequests, DeferredToolResults, RunContext, ToolDefinition
 from pydantic_ai.capabilities import HandleDeferredToolCalls, ToolSearch
 from pydantic_ai.exceptions import ApprovalRequired, UnexpectedModelBehavior, UserError
 from pydantic_ai.messages import (
@@ -59,6 +59,44 @@ def build_agent(*scripts: str, extra: list[Any] | None = None, **kwargs: Any) ->
         return f'closed {number}'
 
     return agent, closed
+
+
+def build_approval_agent(
+    *scripts: str, parks_on: int | None = None, extra: list[Any] | None = None
+) -> tuple[Agent[None, str | DeferredToolRequests], list[Any]]:
+    """An agent with one tool, `danger`, that needs approval; `seen` logs each call's approval flag.
+
+    With `parks_on` only that `n` needs approval and `seen` logs `(n, approved)`.
+    """
+    seen: list[Any] = []
+    remaining = list(scripts)
+
+    async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+        if remaining:
+            return ModelResponse(parts=[ToolCallPart(RUN_SCRIPT_TOOL_NAME, {'script': remaining.pop(0)})])
+        last = messages[-1].parts[-1]
+        assert isinstance(last, ToolReturnPart)
+        return ModelResponse(parts=[TextPart(str(last.content))])
+
+    agent = Agent(
+        FunctionModel(model),
+        deps_type=type(None),
+        output_type=[str, DeferredToolRequests],
+        capabilities=[*(extra or []), ScriptMode[None]()],
+    )
+
+    @agent.tool
+    async def danger(ctx: RunContext[None], n: int) -> int:
+        """Needs approval."""
+        if parks_on is None:
+            seen.append(ctx.tool_call_approved)
+        else:
+            seen.append((n, ctx.tool_call_approved))
+        if not ctx.tool_call_approved and (parks_on is None or n == parks_on):
+            raise ApprovalRequired
+        return n
+
+    return agent, seen
 
 
 def retry_text(messages: list[ModelMessage]) -> str:
@@ -163,7 +201,7 @@ class TestScriptMode:
         result = await agent.run('go')
         assert result.output == "{'status': 'done', 'output': 'closed 1'}"
 
-    async def test_approval_is_resolved_inline_or_is_a_user_error(self):
+    async def test_inline_resolution_is_the_fast_path_and_without_an_output_type_the_framework_says_so(self):
         def build(*capabilities: Any) -> tuple[Agent[None, str], list[bool]]:
             seen: list[bool] = []
 
@@ -184,10 +222,10 @@ class TestScriptMode:
 
             return agent, seen
 
-        # Approving `run_script` on resume cannot reach the nested call, which would raise again forever,
-        # so an unresolved approval is a configuration error that names the capability to add.
+        # Nothing resolved the approval inline, so `run_script` parks and asks for it (ADR 0004); this
+        # agent cannot receive the request, and Pydantic AI's error names both ways to fix that.
         agent, seen = build()
-        with pytest.raises(UserError, match='HandleDeferredToolCalls'):
+        with pytest.raises(UserError, match='DeferredToolRequests.*HandleDeferredToolCalls'):
             await agent.run('go')
         assert seen == [False]
 
@@ -195,6 +233,55 @@ class TestScriptMode:
         result = await agent.run('go')
         assert result.output == "{'status': 'done', 'output': 1}"
         assert seen == [False, True]
+
+    async def test_a_parked_call_suspends_run_script_and_the_approved_re_run_resumes_it(self):
+        agent, seen = build_approval_agent("x = await danger(n=1, _reason='needed')\nreturn x")
+        first = await agent.run('go')
+        requests = first.output
+        assert isinstance(requests, DeferredToolRequests) and len(requests.approvals) == 1
+        call = requests.approvals[0]
+        assert call.tool_name == RUN_SCRIPT_TOOL_NAME
+        assert requests.metadata[call.tool_call_id] == {
+            'script_mode': True,
+            'intent': None,
+            'suspended': [{'step': 'x', 'item': None, 'tool': 'danger', 'args': {'n': 1}, 'reason': 'needed'}],
+        }
+        assert seen == [False]
+
+        resumed = await agent.run(
+            message_history=first.all_messages(),
+            deferred_tool_results=DeferredToolResults(approvals={call.tool_call_id: True}),
+        )
+        assert resumed.output == "{'status': 'done', 'output': 1}"
+        assert seen == [False, True]
+
+    async def test_a_denied_run_script_leaves_the_parked_step_to_be_asked_again(self):
+        agent, seen = build_approval_agent('x = await danger(n=1)\nreturn x', 'x = await danger(n=1)\nreturn x')
+        first = await agent.run('go')
+        assert isinstance(first.output, DeferredToolRequests)
+        call_id = first.output.approvals[0].tool_call_id
+        denied = await agent.run(
+            message_history=first.all_messages(),
+            deferred_tool_results=DeferredToolResults(approvals={call_id: False}),
+        )
+        # The model saw the denial and wrote the same script again: it parks again, unresolved.
+        assert isinstance(denied.output, DeferredToolRequests)
+        assert seen == [False, False]
+
+    async def test_a_fan_out_with_a_parked_item_resumes_only_that_item(self):
+        agent, seen = build_approval_agent('ys = [await danger(n=i) for i in [1, 2, 3]]\nreturn ys', parks_on=2)
+        first = await agent.run('go')
+        assert isinstance(first.output, DeferredToolRequests)
+        call = first.output.approvals[0]
+        assert first.output.metadata[call.tool_call_id]['suspended'] == [
+            {'step': 'ys', 'item': 1, 'tool': 'danger', 'args': {'n': 2}, 'reason': None}
+        ]
+        resumed = await agent.run(
+            message_history=first.all_messages(),
+            deferred_tool_results=DeferredToolResults(approvals={call.tool_call_id: True}),
+        )
+        assert resumed.output == "{'status': 'done', 'output': [1, 2, 3]}"
+        assert seen == [(1, False), (2, False), (3, False), (2, True)]
 
     async def test_function_in_result_is_a_retry(self):
         agent, _ = build_agent("issues = await list_issues(repo='api')\nreturn [len]", 'x = 1')

@@ -20,7 +20,7 @@ from pydantic_core import to_jsonable_python
 from typing_extensions import TypedDict
 
 from pydantic_ai_scriptmode._compile import CompileError, compile_script
-from pydantic_ai_scriptmode._execute import CallError, ExecuteResult, execute_plan
+from pydantic_ai_scriptmode._execute import CallError, ExecuteResult, Suspend, execute_plan
 from pydantic_ai_scriptmode._plan import CallStep, Limits, Plan
 from pydantic_ai_scriptmode._record import InMemoryRecordStore, RecordStore
 from pydantic_ai_scriptmode._teaching import Issue
@@ -81,7 +81,8 @@ return {'archived': len([d for d in done if d])}
 
 Independent steps run concurrently. Results settle per step and are kept for this conversation: if \
 a script fails, a corrected script reuses the steps that already settled unchanged, so do not \
-re-run work the error message lists as settled.\
+re-run work the error message lists as settled. A call that needs approval pauses the script; once \
+approved, the same script continues from where it stopped, so do not rewrite it.\
 """
 
 
@@ -148,14 +149,28 @@ def _execution_retry(plan: Plan, outcome: ExecuteResult) -> str:
     return message
 
 
+def _suspension_metadata(plan: Plan, outcome: ExecuteResult) -> dict[str, Any]:
+    """What the approver sees on `run_script`'s approval request: the intent and every parked call."""
+    steps = {s.name: s for s in plan.steps}
+    suspended: list[dict[str, Any]] = []
+    for name, item, payload in outcome.suspensions:
+        step = steps[name]
+        reason = step.reason if isinstance(step, CallStep) else None
+        suspended.append(
+            {'step': name, 'item': item, 'tool': payload['tool'], 'args': payload['args'], 'reason': reason}
+        )
+    return {'script_mode': True, 'intent': plan.intent, 'suspended': suspended}
+
+
 @dataclass
 class _Dispatcher:
     """Performs one plan's calls through a nested `ToolManager`, keeping the parts for the metadata.
 
-    Every failure the script can handle becomes a `CallError`. An unresolved approval or deferral
-    is a `UserError`, as in harness `CodeMode`: the nested call is not a call the model made, so
-    the agent cannot resume it by approving `run_script`. `HandleDeferredToolCalls` resolves it
-    inline instead.
+    Every failure the script can handle becomes a `CallError`. An approval nothing resolved inline
+    parks the call (`Suspend`); the run suspends and `run_script` asks for the approval itself
+    (ADR 0004). A re-dispatched call with the resolution `True` runs approved. A deferral is a
+    `UserError`, as in harness `CodeMode`: the nested call is not a call the model made, so the
+    agent cannot hand its result back.
     """
 
     tool_manager: ToolManager[Any]
@@ -170,12 +185,16 @@ class _Dispatcher:
         part = ToolCallPart(tool_name=original, args=args, tool_call_id=call_id)
         self.calls[call_id] = part
         try:
-            result = await self.tool_manager.handle_call(part, wrap_validation_errors=False)
-        except (CallDeferred, ApprovalRequired) as e:
+            result = await self.tool_manager.handle_call(
+                part, approved=resolution is True, wrap_validation_errors=False
+            )
+        except ApprovalRequired as e:
+            raise Suspend({'tool': step.tool, 'args': args, 'metadata': e.metadata}) from e
+        except CallDeferred as e:
             raise UserError(
-                f'Tool {original!r} raised {type(e).__name__} inside a script, but no `HandleDeferredToolCalls` '
-                'capability resolved it. Add one to the agent so approval and deferral are handled inline; '
-                'a script cannot pause and resume at one call.'
+                f'Tool {original!r} raised CallDeferred inside a script, but no `HandleDeferredToolCalls` '
+                'capability resolved it. Add one to the agent so deferral is handled inline; '
+                'a script cannot hand a nested call to an external executor.'
             ) from e
         except ModelRetry as e:
             raise CallError(e.message) from e
@@ -336,12 +355,27 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
         dispatch = _Dispatcher(tool_manager, tool.sanitized_to_original, ctx.tool_call_id or 'pyd_ai_script_mode')
         conversation_id = ctx.conversation_id
         record = await self.record_store.get(conversation_id) if conversation_id is not None else None
-        outcome = await execute_plan(plan, dispatch=dispatch, limits=self.limits, record=record)
+        # The approved re-run resumes from the record, not from `ctx.tool_call_metadata`: Pydantic AI
+        # echoes metadata back only when the caller copies it into `DeferredToolResults`.
+        resolutions: dict[str, Any] = {}
+        if ctx.tool_call_approved and record is not None:
+            resolutions = {name: True for name, entry in record.steps.items() if entry.status == 'suspended'}
+        outcome = await execute_plan(
+            plan, dispatch=dispatch, limits=self.limits, record=record, resolutions=resolutions
+        )
         if conversation_id is not None:
             await self.record_store.put(conversation_id, outcome.record)
 
         if outcome.status == 'error':
             raise ModelRetry(_execution_retry(plan, outcome))
+        if outcome.status == 'suspended':
+            if conversation_id is None:
+                raise UserError(
+                    'A script call needs approval, but the run has no conversation id to keep the record under, '
+                    'so it could not be resumed. Add a `HandleDeferredToolCalls` capability to resolve approvals '
+                    'inline instead.'
+                )
+            raise ApprovalRequired(metadata=_suspension_metadata(plan, outcome))
         metadata = {
             'script_mode': True,
             'plan': plan.to_dict(),
