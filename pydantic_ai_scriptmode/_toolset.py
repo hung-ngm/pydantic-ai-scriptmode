@@ -12,7 +12,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 from pydantic_ai import RunContext, ToolDefinition, WrapperToolset
 from pydantic_ai.exceptions import ApprovalRequired, CallDeferred, ModelRetry, UserError
 from pydantic_ai.function_signature import FunctionSignature
-from pydantic_ai.messages import ToolCallPart, ToolReturn, ToolReturnPart
+from pydantic_ai.messages import InstructionPart, ToolCallPart, ToolReturn, ToolReturnPart
 from pydantic_ai.tool_manager import ToolManager
 from pydantic_ai.tools import AgentDepsT, ToolDenied, ToolSelector, matches_tool_selector
 from pydantic_ai.toolsets.abstract import SchemaValidatorProt, ToolsetTool
@@ -268,6 +268,24 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
             wrapped_tools=wrapped_tools,
         )
         return result
+
+    async def get_instructions(
+        self, ctx: RunContext[AgentDepsT]
+    ) -> str | InstructionPart | Sequence[str | InstructionPart] | None:
+        """Append the catalog stashed by `get_tools` as a dynamic instruction, when there is one.
+
+        `dynamic=True` puts it after the cache breakpoint on providers that split instructions
+        (Anthropic, Bedrock), so a discovery changes the catalog without busting the static prefix.
+        """
+        upstream = await self.wrapped.get_instructions(ctx)
+        if not self._last_catalog:
+            return upstream
+        catalog = InstructionPart(content=self._last_catalog, dynamic=True)
+        if upstream is None:
+            return catalog
+        if isinstance(upstream, (str, InstructionPart)):
+            return [upstream, catalog]
+        return [*upstream, catalog]
 
     async def call_tool(
         self, name: str, tool_args: dict[str, Any], ctx: RunContext[AgentDepsT], tool: ToolsetTool[AgentDepsT]

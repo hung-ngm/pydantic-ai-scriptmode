@@ -8,7 +8,15 @@ import pytest
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.capabilities import HandleDeferredToolCalls, ToolSearch
 from pydantic_ai.exceptions import ApprovalRequired, UnexpectedModelBehavior, UserError
-from pydantic_ai.messages import ModelMessage, ModelResponse, RetryPromptPart, TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import (
+    InstructionPart,
+    ModelMessage,
+    ModelResponse,
+    RetryPromptPart,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.toolsets.function import FunctionToolset
@@ -305,3 +313,42 @@ class TestDynamicCatalog:
         tools = await toolset.get_tools(run_context())
         assert 'system instructions' in (tools[RUN_SCRIPT_TOOL_NAME].tool_def.description or '')
         assert toolset._last_catalog == ''  # pyright: ignore[reportPrivateUsage]
+
+    async def test_catalog_is_a_dynamic_instruction_part(self):
+        toolset = ScriptModeToolset(wrapped=FunctionToolset([add]), dynamic_catalog=True)
+        ctx = run_context()
+        await toolset.get_tools(ctx)
+        instructions = await toolset.get_instructions(ctx)
+        assert isinstance(instructions, InstructionPart)
+        assert 'async def add(*, a: int, b: int) -> int' in instructions.content
+        assert instructions.dynamic is True
+
+    @pytest.mark.parametrize(
+        ('upstream', 'expected_prefix'),
+        [
+            ('wrapped', ['wrapped']),
+            (InstructionPart(content='part'), [InstructionPart(content='part')]),
+            (['a', InstructionPart(content='b')], ['a', InstructionPart(content='b')]),
+        ],
+    )
+    async def test_catalog_is_appended_to_upstream_instructions(self, upstream: Any, expected_prefix: list[Any]):
+        class Upstream(FunctionToolset[None]):
+            async def get_instructions(self, ctx: RunContext[None]) -> Any:
+                return upstream
+
+        toolset = ScriptModeToolset(wrapped=Upstream([add]), dynamic_catalog=True)
+        ctx = run_context()
+        await toolset.get_tools(ctx)
+        instructions = await toolset.get_instructions(ctx)
+        assert isinstance(instructions, list)
+        assert instructions[:-1] == expected_prefix
+        assert isinstance(instructions[-1], InstructionPart) and 'async def add' in instructions[-1].content
+
+    async def test_no_instructions_when_off_or_empty(self):
+        for toolset in (
+            ScriptModeToolset(wrapped=FunctionToolset([add])),
+            ScriptModeToolset(wrapped=FunctionToolset(), dynamic_catalog=True),
+        ):
+            ctx = run_context()
+            await toolset.get_tools(ctx)
+            assert await toolset.get_instructions(ctx) is None
