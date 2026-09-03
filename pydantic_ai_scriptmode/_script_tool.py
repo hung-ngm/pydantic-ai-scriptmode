@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 from typing import Any
 
 from pydantic import TypeAdapter
@@ -11,6 +11,7 @@ from pydantic_core import to_jsonable_python
 
 from pydantic_ai_scriptmode._compile import compile_script
 from pydantic_ai_scriptmode._plan import Plan
+from pydantic_ai_scriptmode._validate import input_fields
 
 JsonSchema = dict[str, Any]
 
@@ -27,6 +28,7 @@ class ScriptTool:
 
     name: str
     script: str
+    _: KW_ONLY
     description: str | None = None
     """What the model sees; defaults to the script's intent line."""
     parameters: type[Any] | JsonSchema | None = None
@@ -52,8 +54,24 @@ class ScriptTool:
             object.__setattr__(self, '_adapter', adapter)
             schema = _schema(adapter)
         object.__setattr__(self, 'parameters_json_schema', schema)
+        self._check_input_fields(schema)
         returns = None if self.returns is None else _schema(TypeAdapter(self.returns))
         object.__setattr__(self, 'return_schema', returns)
+
+    def _check_input_fields(self, schema: JsonSchema) -> None:
+        """Every `input.<field>` the script reads must be a declared parameter, unless the schema is open."""
+        if schema.get('additionalProperties', False) is not False:
+            return
+        declared: set[str] = set(schema.get('properties', {}))
+        unknown = sorted(input_fields(self.plan) - declared)
+        if not unknown:
+            return
+        have = f'declared: {", ".join(sorted(declared))}' if declared else 'the tool declares no parameters'
+        raise ValueError(
+            f'script tool `{self.name}` reads {", ".join(f"`input.{f}`" for f in unknown)}, '
+            f'which {"is" if len(unknown) == 1 else "are"} not among its parameters ({have}). '
+            'Declare the field in `parameters` or fix the script.'
+        )
 
     def validate_input(self, args: dict[str, Any]) -> dict[str, Any]:
         """The call's arguments as the plain data a plan reads as `input`; a Python type validates them."""

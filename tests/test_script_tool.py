@@ -17,26 +17,26 @@ return {'closed': len(closed)}
 """
 
 
+class Params(TypedDict):
+    repo: str
+    limit: NotRequired[int]
+
+
 class TestConstruction:
     def test_compiles_the_script_and_the_description_defaults_to_the_intent(self):
-        tool = ScriptTool('close_stale', CLOSE_STALE)
+        tool = ScriptTool('close_stale', CLOSE_STALE, parameters=Params)
         assert tool.name == 'close_stale'
         assert tool.plan.intent == 'Close every stale issue in a repository'
         assert [s.name for s in tool.plan.steps] == ['issues', 'stale', 'closed']
         assert tool.description == 'Close every stale issue in a repository'
-        assert ScriptTool('close_stale', CLOSE_STALE, description='Close stale issues').description == (
-            'Close stale issues'
-        )
+        assert ScriptTool(
+            'close_stale', CLOSE_STALE, parameters=Params, description='Close stale issues'
+        ).description == ('Close stale issues')
 
     def test_a_script_that_does_not_compile_fails_at_construction(self):
         with pytest.raises(CompileError) as exc_info:
             ScriptTool('bad', 'while True:\n    pass')
         assert exc_info.value.issues
-
-
-class Params(TypedDict):
-    repo: str
-    limit: NotRequired[int]
 
 
 class TestParameters:
@@ -61,3 +61,19 @@ class TestParameters:
         assert bare.parameters_json_schema == {'type': 'object', 'properties': {}}
         assert bare.return_schema is None
         assert bare.validate_input({}) == {}
+
+
+class TestInputFields:
+    def test_a_read_of_an_undeclared_field_fails_at_construction(self):
+        script = CLOSE_STALE.replace('input.repo', 'input.repos', 1)
+        with pytest.raises(ValueError, match=r'`close_stale` reads `input.repos`.*declared: limit, repo'):
+            ScriptTool('close_stale', script, parameters=Params)
+        with pytest.raises(ValueError, match=r'`input.repo`.*no parameters'):
+            ScriptTool('close_stale', CLOSE_STALE)
+
+    def test_subscript_reads_count_and_an_open_schema_accepts_any_field(self):
+        script = CLOSE_STALE.replace('input.repo', "input['repo']")
+        with pytest.raises(ValueError, match=r'`input.repo`'):
+            ScriptTool('close_stale', script, parameters={'type': 'object', 'properties': {'name': {}}})
+        ScriptTool('close_stale', script, parameters={'type': 'object', 'additionalProperties': True})
+        ScriptTool('close_stale', script, parameters=dict[str, str])

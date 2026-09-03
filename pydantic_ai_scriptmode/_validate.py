@@ -48,6 +48,29 @@ def _called_free_names(node: ast.expr) -> set[str]:
     return called & free_names(node)
 
 
+def input_fields(plan: Plan) -> set[str]:
+    """The fields a plan reads off `input`, as `input.name` or `input['name']`."""
+    fields: set[str] = set()
+    for step in plan.steps:
+        for source in _sources(step):
+            for node in ast.walk(parse_expression(source)):
+                if isinstance(node, ast.Attribute) and _is_input(node.value):
+                    fields.add(node.attr)
+                elif isinstance(node, ast.Subscript) and _is_input(node.value):
+                    key = _str_constant(node.slice)
+                    if key is not None:
+                        fields.add(key)
+    return fields
+
+
+def _is_input(node: ast.expr) -> bool:
+    return isinstance(node, ast.Name) and node.id == 'input'
+
+
+def _str_constant(node: ast.expr) -> str | None:
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
 def validate_plan(plan: Plan, *, tools: Mapping[str, ToolSignature], limits: Limits) -> list[Issue]:  # noqa: C901
     """Return every issue with `plan` against `tools` and `limits`; an empty list means executable."""
     issues: list[Issue] = []
