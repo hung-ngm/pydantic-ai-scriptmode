@@ -1,4 +1,4 @@
-# Handoff: pydantic-ai-scriptmode (ADR 0003 accepted; next is building `dynamic_catalog`)
+# Handoff: pydantic-ai-scriptmode (`dynamic_catalog` built, trialled, and pushed; next is backlog item 2)
 
 Date: 2026-09-03
 Workspace: `/Users/hungng/Documents/AI/experiments/pydantic-experiments/`
@@ -9,9 +9,24 @@ session; do not write handoff copies elsewhere (no temp-directory copies, no pro
 ## Where things stand
 
 The package is complete, reviewed, trialled against a real model, committed, and pushed. `make all`
-(ruff format, ruff check, pyright strict, pytest) is green: 150 passed, no xfails, no skips.
+(ruff format, ruff check, pyright strict, pytest) is green: 174 passed, no xfails, no skips.
 `git log` on `main`, newest first (handoff-only commits omitted):
 
+- `e2d9840` Description stays true before any tool is folded; search addendum when `search_tools` is native
+- `7dbbe7b` Instruction tests compare content, since upstream text arrives normalized
+- `b64acab` `get_instructions` relays upstream parts through the base class so owner keys survive
+- `9a0e691` Announcement names discovered tools as a script calls them (sanitized)
+- `8afc7e1` Glossary gains Discovery and Announcement; prose says discovered, not revealed
+- `6ed2aee` README documents `dynamic_catalog`; tutor harness gets `SCRIPTMODE_DYNAMIC_CATALOG=1`
+- `05f1e73` Test reads prompt parts by type so pyright strict passes
+- `0458a58` End-to-end: a script calls a tool discovered by `ToolSearch` with `dynamic_catalog` on
+- `1dab7b4` `ScriptMode` announces tools discovered by local or native search
+- `3a55eb0` `ScriptMode(dynamic_catalog=True)` passes the flag through; `for_run` isolates state
+- `6ddcd4e` Toolset carries the catalog stash through a per-step rebuild
+- `448898e` Toolset surfaces the stashed catalog as a dynamic `InstructionPart`
+- `f52fe14` Toolset splits the `run_script` description from the catalog behind `dynamic_catalog`
+- `f02fbff` Accept ADR 0003
+- `3c37bfa` ADR 0003 (proposed)
 - `57517ff` Fan-out takes its bound from the derivation it iterates (backlog item 0)
 - `1c87782` Tutor harness compares plain tools with script mode; all uv groups default
 - `79468b8` Tune the run_script description from the first trial; total calls 500
@@ -28,20 +43,33 @@ no force-push, no other branches yet.
 
 Uncommitted, the user's own work in progress (do not touch, do not commit): Logfire instrumentation
 of `examples/tutor.py` (`logfire.configure`, `instrument_pydantic_ai`, four metrics per run) with
-`logfire>=4.41.0` added to the `examples` group in `pyproject.toml` and `uv.lock`.
+`logfire>=4.41.0` added to the `examples` group in `pyproject.toml` and `uv.lock`. The harness
+switch for `dynamic_catalog` (three lines) was committed out of that file by staging only its hunk;
+the Logfire hunks remain unstaged. One review finding is for the user, not this package:
+`logfire.configure()` runs at import with `send_to_logfire` defaulting to `True`, so a clone without
+`logfire auth` or a token raises or prompts before `main()`; `send_to_logfire='if-token-present'`
+(and `console=False` to keep the printed trace clean) would fix it.
 
-Steps 1 to 4 are done. Backlog item 0 is done. Item 1, `dynamic_catalog`, has an accepted ADR
-(`docs/adr/0003-dynamic-catalog.md`) and no code yet. The next session builds it.
+Steps 1 to 4 are done. Backlog items 0 and 1 are done. The next item is 2, suspend and detach,
+which starts with an ADR.
 
 Session history, newest first:
 
-- 2026-09-03 (latest, second part): the user accepted ADR 0003 and asked for this build plan
-  instead of starting the code. No code for item 1 exists yet.
-- 2026-09-03 (latest): backlog item 0 done by TDD (`57517ff`): the compiler keeps `bounds`, the
+- 2026-09-03 (latest, third part): built `dynamic_catalog` by TDD in the order of the build plan,
+  one commit per behaviour (`f52fe14` to `0458a58`). Domain-modeling pass added two glossary terms
+  (`8afc7e1`). Trialled on the tutor harness with the flag on (see "Trial findings"). The
+  `code-review` skill at `medium` hit the session rate limit mid-verification again; its fourteen
+  candidates were verified by hand, three fixed (`9a0e691`, `b64acab`, `e2d9840`), the rest
+  recorded under "Review findings". Two `make all` failures slipped into pushed commits because
+  the commit was chained after an unchecked grep; fixed in follow-up commits (`05f1e73`,
+  `7dbbe7b`), and every later commit is gated on `make all` succeeding.
+- 2026-09-03 (second part): the user accepted ADR 0003 and asked for a build plan instead of
+  starting the code.
+- 2026-09-03: backlog item 0 done by TDD (`57517ff`): the compiler keeps `bounds`, the
   literal bound of every derivation, and a fan-out over a bare name inherits it; a rebinding drops
   it. Tests include the exact script from `.local/tutor-compare-2.txt`. README grammar paragraph
   updated; teaching copy unchanged, so no tutor run was needed. Wrote ADR 0003 for item 1 after
-  reading harness `CodeMode.dynamic_catalog`; see "Next session".
+  reading harness `CodeMode.dynamic_catalog`.
 - 2026-09-03 (later): step 3 done. Built `examples/tutor.py`, ran it five times against
   `anthropic:claude-opus-5` with the key from `.env` (git-ignored, standard workspace key; an
   identity-linked key needs an `anthropic-workspace-id` header the SDK does not add, which cost
@@ -62,8 +90,9 @@ Session history, newest first:
 Read these first, in order. Do not restate them here.
 
 - `README.md`: usage, "How it works", grammar table, options, retry messages.
-- `CONTEXT.md`: glossary (16 terms). Use these words in code, docs, tests, and this file.
-- `docs/adr/0001-*.md`, `0002-*.md`: why inert plan, why Python surface.
+- `CONTEXT.md`: glossary (18 terms). Use these words in code, docs, tests, and this file.
+- `docs/adr/0001-*.md`, `0002-*.md`, `0003-*.md`: why inert plan, why Python surface, why the
+  catalog can move into instructions.
 - Project memory `~/.claude/projects/-Users-hungng-Documents-AI-experiments-pydantic-experiments/memory/scriptmode-project.md`
   (loaded automatically via `MEMORY.md`).
 
@@ -81,8 +110,8 @@ what it owns.
 | `_validate.py` | `validate_plan`, `ToolSignature` | `tests/test_validate.py` |
 | `_record.py` | `Record`, `StepRecord`, `RecordStore` protocol, `InMemoryRecordStore`, `reusable_steps` | `tests/test_execute.py::TestRecordReuse` |
 | `_execute.py` | `Runner` (with `schedule`), `execute_plan`, `CallError`, `Dispatch` | `tests/test_execute.py` |
-| `_toolset.py` | `ScriptModeToolset(WrapperToolset)`, `run_script` description and dispatch | `tests/test_script_mode.py` |
-| `_capability.py` | `ScriptMode(AbstractCapability)` | `tests/test_script_mode.py` |
+| `_toolset.py` | `ScriptModeToolset(WrapperToolset)`, `run_script` description, catalog stash and `get_instructions`, dispatch | `tests/test_script_mode.py` |
+| `_capability.py` | `ScriptMode(AbstractCapability)`, discovery announcements | `tests/test_script_mode.py` |
 
 Public surface is `pydantic_ai_scriptmode/__init__.py` (`__all__`).
 
@@ -90,7 +119,8 @@ Public surface is `pydantic_ai_scriptmode/__init__.py` (`__all__`).
 later, so nothing else may depend on it. It builds the same four tools into two agents, one with
 plain tools and one with `ScriptMode`, runs each task on both, prints every script, retry, and
 return, and ends with a comparison table (model requests, tool calls, total tokens).
-`uv run python examples/tutor.py [task ...]`, tasks `practice`, `reviews`, `impossible`. Needs
+`uv run python examples/tutor.py [task ...]`, tasks `practice`, `reviews`, `impossible`;
+`SCRIPTMODE_DYNAMIC_CATALOG=1` turns the flag on for the script agent. Needs
 `ANTHROPIC_API_KEY` in `.env` (git-ignored). All dependency groups are default in `[tool.uv]`, so
 plain `uv sync` and `uv run` install the linters and the Anthropic extra together.
 
@@ -101,7 +131,8 @@ through `_Dispatcher`, which calls each folded tool through a nested `ToolManage
 second request sees `{'status': ..., 'output': ...}` and writes the summary. A retry message
 (compile, validate, or a failed step) costs one more request and settled steps are reused.
 
-`.local/` is git-ignored scratch: `tutor-run-1.txt` to `tutor-run-5.txt` are the trial transcripts;
+`.local/` is git-ignored scratch: `tutor-run-1.txt` to `tutor-run-5.txt`, `tutor-compare-*.txt`, and
+`tutor-dynamic-*.txt` are the trial transcripts;
 the scheduler answer key and swap helper from the learning phase are redundant and safe to delete.
 
 ## Decisions made while coding (not in the ADRs or README)
@@ -153,6 +184,20 @@ the scheduler answer key and swap helper from the learning phase are redundant a
   detail, but not one that a second raise site omits; check both sites when adding a kind.
 - `tests/test_script_mode.py::test_validation_error_is_a_retry` asserts on rendered copy, not kind
   names. Kind names no longer appear in any model-facing text.
+- `dynamic_catalog` (ADR 0003) mirrors harness `CodeMode` piece for piece. The catalog string is
+  stashed on the toolset by `get_tools` and read by `get_instructions` in the same step;
+  `for_run_step` copies it (and `_warned_no_return_schema`) onto a rebuilt instance because a
+  dataclass `replace` re-runs `init=False` defaults. `get_instructions` relays upstream through
+  `super()`, not `self.wrapped`, so a wrapped toolset's `id` stays on its own parts (found in review).
+- The dynamic-mode description is byte-stable across discoveries by construction: the head, the
+  limits, one pointer sentence that is true whether or not anything is folded yet, and a search
+  addendum that depends only on whether `search_tools` is native. The end-to-end test asserts the
+  description set has one element across a discovery.
+- The announcement names tools as a script calls them (`sanitize_tool_name`, now package-public in
+  `_toolset.py`), because the catalog shows the sanitized form.
+- `_discovered_names` validates the search return leniently with two private `TypedDict`s, as the
+  harness does: a malformed entry is skipped, a malformed catalog yields no names. The public
+  `ToolSearchReturnContent` type would drop every name on one bad entry.
 
 ## Review findings (step 2, done 2026-09-03)
 
@@ -162,7 +207,33 @@ compile and validate retries share `_render_issues`, the execution retry is a di
 stays separate. (2) `_call_builtin` charges consistently; the real bypass was `*` and `+` on
 sequences, now charged. (3) Cancel is right; see "Decisions". (4) Accepted, below.
 
+`dynamic_catalog` review (2026-09-03, `code-review` at `medium`, verified by hand after the rate
+limit): fourteen candidates. Fixed: announcement used raw names where the catalog shows sanitized
+ones (`9a0e691`); `get_instructions` called `self.wrapped` directly, which the base class treats as
+"authors its own instructions" and so dropped the upstream toolset's owner key on the direct-wrap
+path (`b64acab`, confirmed by a verifier against `toolsets/abstract.py`); with nothing folded yet
+the description pointed at a catalog that was not there and the head said "listed below"
+(`e2d9840`). Two candidates were about the user's uncommitted Logfire work (see "Where things
+stand"). The rest are accepted below.
+
 Known and accepted:
+
+- Announcement is not filtered through the fold rules: a discovered tool that `tools=[...]`
+  excludes is still announced as callable from `run_script`. The capability has no tool
+  definition at announce time. Same in the harness; the next catalog is the source of truth.
+- Cross-run re-announce: `_announced_tools` starts empty on `for_run` and is not seeded from
+  history, and `search_tools` returns already-discovered tools (undiscovered first), so a second
+  run over the same history announces `weather` again. One sentence. `ctx.discovered_tool_names`
+  is refreshed inside graph nodes, after `for_run`, so seeding there is unreliable.
+- End-of-run redirect: an announcement enqueued after a response with no tool calls makes the
+  drain redirect, costing one model request. Only native search can produce that shape.
+- An inner capability that rewraps the `search_tools` result (into a `ToolReturn`, say) yields no
+  names and so no announcement. Silent by design; the catalog still updates.
+- The `for_run_step` copy of `_last_catalog` is redundant in the agent flow, where `ToolManager`
+  calls `get_tools` right after the rebuild; it is kept for any caller that does not, and the
+  harness test shape pins it.
+- Cache claim scope: `dynamic=True` keeps the tools block and the static instructions cached; the
+  catalog and everything after it are re-read on a discovery. The README says exactly that.
 
 - `is_tool_call`: a bare call to a step name defined later in the script fires `forgot_await`
   rather than `unknown_function`. Both are rejections with teaching copy; the model fixes the line
@@ -180,76 +251,15 @@ Known and accepted:
 
 ## Next session: start here
 
-1. `cd pydantic-ai-scriptmode && git pull && uv sync --all-groups && make all`. Expect 150 passed.
+1. `cd pydantic-ai-scriptmode && git pull && uv sync --all-groups && make all`. Expect 174 passed.
    `git status` will show the user's uncommitted Logfire work (see above); leave it.
-2. Build `dynamic_catalog` per ADR 0003 with `mattpocock-skills:tdd`, in the order below. Commit
-   per behaviour, push after each commit. Do not ask the user to re-approve; the ADR is accepted.
-3. After the code: `uv run python examples/tutor.py` with the flag on (add a
-   `SCRIPTMODE_DYNAMIC_CATALOG=1` env switch to the harness, keep the default off). All three tasks
-   should succeed in one turn with zero retries, as in `.local/tutor-run-5.txt`. Save the
-   transcript as `.local/tutor-dynamic-1.txt` and record the result under "Trial findings".
-4. Run `code-review` at `medium` before the last push. Update this file at the end.
-
-### Build plan for `dynamic_catalog` (ADR 0003)
-
-Mirror harness `CodeMode`; every piece below has a counterpart there. Reference lines:
-`pydantic-ai-harness/pydantic_ai_harness/code_mode/_capability.py` 105 to 215 (field docstring,
-`for_run`, the two hooks, `_announce_newly_discovered`, `_extract_discovered_names`),
-`_toolset.py` 555 to 700 (`_last_catalog`, `for_run_step`, `get_instructions`, the `get_tools`
-branch), and `tests/code_mode/test_code_mode.py` from line 2917 (class docstring lists the two
-surfaces; copy its test shapes, not its sandbox wording).
-
-Write the failing test first for each step, in `tests/test_script_mode.py` (a new class
-`TestDynamicCatalog` next to `TestToolsetDirect`; `build_agent` and `describe` there already give
-you an agent with `TestModel` and the rendered `run_script` description).
-
-1. Toolset field and description split. `ScriptModeToolset.dynamic_catalog: bool = False`.
-   In `get_tools`, when on: `description = '\n\n'.join([_DESCRIPTION_HEAD, _limits_paragraph(...)])`
-   plus one sentence saying the tools are listed in the system instructions; stash the catalog
-   (the `_FUNCTIONS_HEADER` and code blocks that `_description` builds today) in
-   `_last_catalog: str` (`init=False, repr=False`); when off, `_last_catalog = ''`. Split
-   `_description` into the static head and a `_catalog(callable_defs) -> str` so both paths
-   share the rendering. Tests: description drops `async def` signatures but keeps the head and
-   the limits sentence; default keeps the catalog in the description; `_last_catalog` empty when
-   off or when nothing is folded.
-2. `get_instructions`. Override on the toolset: call `self.wrapped.get_instructions(ctx)`; if the
-   stash is empty return upstream unchanged; else append `InstructionPart(content=..., dynamic=True)`
-   to a `None`, `str | InstructionPart`, or sequence upstream. Tests: the three upstream shapes;
-   `dynamic is True`; catalog reaches the model through `Agent` (check `TestModel`'s captured
-   `ModelRequest` instructions, not just the toolset call).
-3. Per-step state. Override `for_run_step` so a rebuilt wrapped toolset keeps `_last_catalog`
-   (harness copies it by hand after `replace`). `for_run` is inherited from `WrapperToolset` and
-   already returns a copy. Test: the harness one at line 3037 (`_ChangingToolset`).
-4. Capability field and per-run copy. `ScriptMode.dynamic_catalog: bool = False` after
-   `max_retries`, passed through `get_wrapper_toolset`; `_announced_tools: set[str]`
-   (`init=False, repr=False`); `for_run` returns `replace(self)` when on, `self` when off. Tests:
-   fresh set on `for_run` when on, identity when off.
-5. Announcements. `after_tool_execute` (when on and `tool_def.tool_kind == 'tool-search'`) and
-   `after_model_request` (when on, for each `NativeToolSearchReturnPart`) call
-   `_announce_newly_discovered`, which enqueues one `SystemPromptPart` naming the fresh tools and
-   remembers them. Copy `_extract_discovered_names` with its two lenient `TypedDict`s. Wording:
-   "New tools are now callable from `run_script`. Their signatures are in the catalog in the
-   system instructions: `a`, `b`." Tests: local path, native path, no repeat announcement, inert
-   when off, malformed return yields no announcement. Then one end-to-end test with
-   `capabilities=[ToolSearch(), ScriptMode(dynamic_catalog=True)]` and a `FunctionModel` that
-   searches, then writes a script calling the revealed tool (harness line 3246 is the model).
-6. Copy. README options table gets a `dynamic_catalog` row and one paragraph under "How it
-   works" saying when to turn it on (paired with `ToolSearch`) and why not by default. The
-   `unknown_tool` and `unknown_argument` teaching templates say "in the catalog", which is true
-   in both modes; leave them. `CONTEXT.md` needs no new term ("catalog" already covers it); run
-   `mattpocock-skills:domain-modeling` on the diff to confirm.
-
-Things to check while building, settled in the ADR or found while reading:
-
-- `ctx.enqueue` exists on `RunContext` in pydantic-ai 2.37 (`_run_context.py` line 492) and
-  `InstructionPart.dynamic` at `messages.py` line 1861. `NativeToolSearchReturnPart` is in
-  `pydantic_ai.messages`.
-- `get_instructions` receives only `ctx`, not the tools; that is why the stash lives on the
-  toolset and not on `_RunScriptTool`.
-- The stash is written by `get_tools` and read by `get_instructions` in the same step; if the
-  step is rebuilt in between, `for_run_step` must carry it (step 3).
-- `ToolSearch` already sits inside `ScriptMode` by `get_ordering`, so `search_tools` is native
-  and a revealed tool is folded on the next `get_tools`; nothing in the fold changes.
+2. Backlog item 2, suspend and detach, starts with an ADR (`docs/adr/0004-suspend-and-detach.md`,
+   `status: proposed`) in the voice of `0002`, then `mattpocock-skills:grilling` on it, then the
+   user's yes before any code. Read callscript `execute.ts` around line 71 (`suspended` status) and
+   `_Dispatcher` in `_toolset.py` (the `UserError` path it replaces) first.
+3. When running `code-review`, do not chain the commit after it or after `make all` without
+   checking the exit status; the pattern that works is
+   `make all > log && echo MAKE_OK || exit 1` before `git commit`.
 
 ## Next steps, in order
 
@@ -314,8 +324,24 @@ Two more findings from the comparison run:
   difference in failure handling, not a comparison artefact, but the harness now raises
   `ModelRetry` so both sides can recover.
 
+`dynamic_catalog=True` on the same harness (2026-09-03, `.local/tutor-dynamic-1.txt`, before the
+review fixes to the description; `-2.txt` after them). The harness has no `ToolSearch`, so this
+checks that the catalog in the instructions teaches as well as the catalog in the description:
+
+| Task | Run 1 (flag on) | Run 2 (flag on, after review fixes) |
+| --- | --- | --- |
+| practice | 3 requests, 12 calls, 0 retries, 7517 tokens | 2 requests, 12 calls, 0 retries, 5115 tokens |
+| reviews | 2 requests, 14 calls, 0 retries, 4591 tokens | 2 requests, 14 calls, 0 retries, 4547 tokens |
+| impossible | 2 requests, 9 calls, 0 retries, 4603 tokens | 2 requests, 9 calls, 0 retries, 5048 tokens |
+
+No rejection fired in either run; run 2 matches run 5 with the default. In run 1 the practice
+task took a third request by the model's choice, not a retry: it wrote one script that returned
+topics and mastery, then a second that fanned out `fetch_exercises` over a literal list of the
+three weak topic ids. One run each, so read that as variance, not as a cost of the flag.
+
 Trial transcripts: `.local/tutor-run-1.txt` (before) to `tutor-run-5.txt` (after),
-`.local/tutor-compare-1.txt` and `-2.txt` (plain against script).
+`.local/tutor-compare-1.txt` and `-2.txt` (plain against script), `.local/tutor-dynamic-1.txt` and
+`-2.txt` (flag on).
 
 ### 4. Keep CONTEXT.md current
 
@@ -323,7 +349,8 @@ Before any step 5 ADR, grep the diff for nouns not in the glossary. Either renam
 term or add the term with an "Avoid" line. Use `mattpocock-skills:domain-modeling`. Checked after
 steps 2 and 3: the commits use only glossary terms (dispatch, fan-out, item, record, limits,
 teaching copy); the example's own nouns (topic, mastery, exercise) are domain data, not engine
-vocabulary. No change needed.
+vocabulary. No change needed. Checked after item 1: added **Discovery** and **Announcement**; the diff's
+"revealed" became "discovered" everywhere (`8afc7e1`).
 
 ### 5. Deferred backlog
 
@@ -333,9 +360,7 @@ the ADR, run `mattpocock-skills:grilling` on it if the choice is not obvious, ge
 then `mattpocock-skills:tdd` for the code. One commit for the ADR, then commits per behaviour.
 
 0. Bound through a derivation: done 2026-09-03 (`57517ff`).
-1. `dynamic_catalog`: ADR 0003 accepted 2026-09-03, code not started. The fold was already
-   dynamic; the item is cache placement of the catalog, mirroring harness `CodeMode`
-   (instructions part plus discovery announcement). Build plan under "Next session".
+1. `dynamic_catalog`: done 2026-09-03 (`f52fe14` to `e2d9840`), ADR 0003.
 2. Suspend and detach: let a plan pause at an approval and resume from its record without
    re-dispatching settled steps. Needs: the record saved before the `UserError`, a `suspended`
    run status (callscript has one, `execute.ts` line ~71), and a way for `run_script` to be
@@ -371,8 +396,7 @@ test run needs bounding.
 Call these with the Skill tool at the step named.
 
 - `mattpocock-skills:writing-for-agents`: when editing the `run_script` description, the
-  announcement sentence, or the teaching copy; all are agent-facing prose. Build plan steps 1
-  and 5 touch them.
+  announcement sentence, or the teaching copy; all are agent-facing prose.
 - `mattpocock-skills:domain-modeling`: step 4, and before any ADR in step 5.
 - `mattpocock-skills:grilling`: on a step 5 ADR whose choice is not obvious, before the user's yes.
 - `mattpocock-skills:tdd`: any engine behaviour change from step 3 or 5.
