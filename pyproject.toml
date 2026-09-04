@@ -28,6 +28,11 @@ dependencies = [
     "python-dotenv>=1.2.3",
 ]
 
+[project.urls]
+Homepage = 'https://github.com/hung-ngm/pydantic-ai-scriptmode'
+Source = 'https://github.com/hung-ngm/pydantic-ai-scriptmode'
+Issues = 'https://github.com/hung-ngm/pydantic-ai-scriptmode/issues'
+
 [dependency-groups]
 dev = [
     'pytest>=9.0.0',

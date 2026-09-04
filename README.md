@@ -265,6 +265,18 @@ reused. A step that reads `input` is reused only when the record was produced un
 arguments. `_reason` and line numbers are not part of the hash, so rewording a reason does not
 invalidate a step.
 
+### Durable execution
+
+`ScriptMode` composes with Pydantic AI's durability capabilities without configuration. Under
+`TemporalDurability` the engine runs workflow-side: compiling, validating, and scheduling a plan are
+deterministic, and every folded call goes through the wrapped toolset, so it is an activity and the
+history replays. The record then lives in the workflow: keep the default `InMemoryRecordStore`, since
+replay rebuilds it from the activity results and the history is the durable copy. Do not hand a
+`SQLiteRecordStore` to an agent that runs inside a Temporal workflow; it runs statements on a thread
+the workflow sandbox does not allow. Under `DBOSDurability` the agent runs in the workflow function
+and the model requests are journaled as steps; any store works there. `tests/test_temporal.py` and
+`tests/test_dbos.py` are the composition tests (`make durability` installs their group).
+
 ## What the model sees on failure
 
 Each stage that rejects a script raises `ModelRetry`, so the model gets one message and another turn.
@@ -318,5 +330,6 @@ result.status, result.output, result.record
 
 ```bash
 make install
-make all    # ruff format, ruff check, pyright strict, pytest
+make all          # ruff format, ruff check, pyright strict, pytest
+make durability   # the Temporal and DBOS composition tests; installs the `durability` group
 ```
