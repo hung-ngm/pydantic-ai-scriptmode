@@ -74,7 +74,7 @@ def build_agent(
 
 
 def build_approval_agent(
-    *scripts: str, parks_on: int | None = None, extra: list[Any] | None = None
+    *scripts: str | ToolCallPart, parks_on: int | None = None, extra: list[Any] | None = None, **kwargs: Any
 ) -> tuple[Agent[None, str | DeferredToolRequests], list[Any]]:
     """An agent with one tool, `danger`, that needs approval; `seen` logs each call's approval flag.
 
@@ -85,7 +85,9 @@ def build_approval_agent(
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         if remaining:
-            return ModelResponse(parts=[ToolCallPart(RUN_SCRIPT_TOOL_NAME, {'script': remaining.pop(0)})])
+            nxt = remaining.pop(0)
+            part = nxt if isinstance(nxt, ToolCallPart) else ToolCallPart(RUN_SCRIPT_TOOL_NAME, {'script': nxt})
+            return ModelResponse(parts=[part])
         last = messages[-1].parts[-1]
         assert isinstance(last, ToolReturnPart)
         return ModelResponse(parts=[TextPart(str(last.content))])
@@ -94,7 +96,7 @@ def build_approval_agent(
         FunctionModel(model),
         deps_type=type(None),
         output_type=[str, DeferredToolRequests],
-        capabilities=[*(extra or []), ScriptMode[None]()],
+        capabilities=[*(extra or []), ScriptMode[None](**kwargs)],
     )
 
     @agent.tool
@@ -881,3 +883,59 @@ class TestScriptTools:
             agent, _ = build_agent(scripts=[tool])
             with pytest.raises(UserError, match=f"'{name}'"):
                 await agent.run('go')
+
+
+DANGER_TWICE = ScriptTool(
+    'danger_twice',
+    '# Do the dangerous thing twice\nys = [await danger(n=i) for i in [input.a, input.b]]\nreturn ys',
+    parameters={'type': 'object', 'properties': {'a': {'type': 'integer'}, 'b': {'type': 'integer'}}},
+    returns=list[int],
+)
+
+
+def not_danger_twice(ctx: RunContext[None], td: ToolDefinition) -> bool:
+    return td.name != 'danger_twice'
+
+
+class TestScriptToolSuspension:
+    async def test_a_native_script_tool_parks_and_the_approved_re_run_resumes_from_its_own_record(self):
+        agent, seen = build_approval_agent(
+            ToolCallPart('danger_twice', {'a': 1, 'b': 2}), parks_on=2, scripts=[DANGER_TWICE], tools=not_danger_twice
+        )
+        first = await agent.run('go')
+        assert isinstance(first.output, DeferredToolRequests)
+        call = first.output.approvals[0]
+        assert call.tool_name == 'danger_twice'
+        assert first.output.metadata[call.tool_call_id] == {
+            'script_mode': True,
+            'script_tool': 'danger_twice',
+            'intent': 'Do the dangerous thing twice',
+            'suspended': [
+                {'step': 'ys', 'item': 1, 'tool': 'danger', 'args': {'n': 2}, 'reason': None, 'metadata': {'n': 2}}
+            ],
+        }
+        resumed = await agent.run(
+            message_history=first.all_messages(),
+            deferred_tool_results=DeferredToolResults(approvals={call.tool_call_id: True}),
+        )
+        assert resumed.output == '[1, 2]'
+        assert seen == [(1, False), (2, False), (2, True)]
+
+    async def test_a_script_tool_parked_inside_a_script_resumes_through_the_outer_approval(self):
+        agent, seen = build_approval_agent(
+            'r = await danger_twice(a=1, b=2)\nreturn r', parks_on=2, scripts=[DANGER_TWICE]
+        )
+        first = await agent.run('go')
+        assert isinstance(first.output, DeferredToolRequests)
+        call = first.output.approvals[0]
+        assert call.tool_name == RUN_SCRIPT_TOOL_NAME
+        [parked] = first.output.metadata[call.tool_call_id]['suspended']
+        assert (parked['step'], parked['tool'], parked['args']) == ('r', 'danger_twice', {'a': 1, 'b': 2})
+        assert parked['metadata']['script_tool'] == 'danger_twice'
+        assert parked['metadata']['suspended'][0]['args'] == {'n': 2}
+        resumed = await agent.run(
+            message_history=first.all_messages(),
+            deferred_tool_results=DeferredToolResults(approvals={call.tool_call_id: True}),
+        )
+        assert resumed.output == "{'status': 'done', 'output': [1, 2]}"
+        assert seen == [(1, False), (2, False), (2, True)]

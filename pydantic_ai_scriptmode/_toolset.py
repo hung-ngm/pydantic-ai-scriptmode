@@ -152,8 +152,11 @@ def _execution_retry(plan: Plan, outcome: ExecuteResult) -> str:
     return message
 
 
-def _suspension_metadata(plan: Plan, outcome: ExecuteResult) -> dict[str, Any]:
-    """What the approver sees on `run_script`'s approval request: the intent and every parked call."""
+def _suspension_metadata(plan: Plan, outcome: ExecuteResult, script_tool: str | None = None) -> dict[str, Any]:
+    """What the approver sees on the approval request: the intent and every parked call.
+
+    A script tool's request also names the tool, so the approver knows a saved script asked.
+    """
     steps = {s.name: s for s in plan.steps}
     suspended: list[dict[str, Any]] = []
     for name, item, payload in outcome.suspensions:
@@ -169,7 +172,10 @@ def _suspension_metadata(plan: Plan, outcome: ExecuteResult) -> dict[str, Any]:
                 'metadata': payload['metadata'],
             }
         )
-    return {'script_mode': True, 'intent': plan.intent, 'suspended': suspended}
+    metadata: dict[str, Any] = {'script_mode': True}
+    if script_tool is not None:
+        metadata['script_tool'] = script_tool
+    return {**metadata, 'intent': plan.intent, 'suspended': suspended}
 
 
 @dataclass
@@ -472,7 +478,7 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
         tool_manager = self._nested_manager(ctx, tool.tools)
         dispatch = _Dispatcher(tool_manager, tool.sanitized_to_original, ctx.tool_call_id or script.name)
         key = None if ctx.conversation_id is None else _script_tool_key(ctx.conversation_id, script.name, input)
-        outcome = await self._run(script.plan, dispatch, ctx, key=key, input=input)
+        outcome = await self._run(script.plan, dispatch, ctx, key=key, input=input, script_tool=script.name)
         if outcome.status == 'error':
             raise ModelRetry(f'`{script.name}` failed at step `{outcome.at}`: {outcome.error}')
         return ToolReturn(
@@ -493,7 +499,14 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
         return ToolManager(toolset=self, root_capability=parent_tm.root_capability, ctx=ctx, tools=tools)
 
     async def _run(
-        self, plan: Plan, dispatch: _Dispatcher, ctx: RunContext[AgentDepsT], *, key: str | None, input: Any
+        self,
+        plan: Plan,
+        dispatch: _Dispatcher,
+        ctx: RunContext[AgentDepsT],
+        *,
+        key: str | None,
+        input: Any,
+        script_tool: str | None = None,
     ) -> ExecuteResult:
         """Execute `plan` against the record under `key`, save the record, and park on a suspension."""
         record = await self.record_store.get(key) if key is not None else None
@@ -522,7 +535,7 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
                     'so it could not be resumed. Add a `HandleDeferredToolCalls` capability to resolve approvals '
                     'inline instead.'
                 )
-            raise ApprovalRequired(metadata=_suspension_metadata(plan, outcome))
+            raise ApprovalRequired(metadata=_suspension_metadata(plan, outcome, script_tool))
         return outcome
 
     def _fold(self, tools: dict[str, ToolsetTool[AgentDepsT]]) -> tuple[dict[str, ToolDefinition], dict[str, str]]:
