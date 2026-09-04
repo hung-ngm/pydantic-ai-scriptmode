@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -34,6 +35,7 @@ from pydantic_ai_scriptmode import (
     ScriptMode,
     ScriptModeToolset,
     ScriptTool,
+    SQLiteRecordStore,
 )
 
 pytestmark = pytest.mark.anyio
@@ -939,6 +941,56 @@ class TestScriptToolSuspension:
         )
         assert resumed.output == "{'status': 'done', 'output': [1, 2]}"
         assert seen == [(1, False), (2, False), (2, True)]
+
+
+class TestDurableResume:
+    """The run that parks and the run that resumes share only a file (ADR 0006)."""
+
+    async def test_a_parked_script_resumes_in_another_agent_over_the_same_file(self, tmp_path: Path):
+        path = tmp_path / 'records.sqlite'
+        parking = SQLiteRecordStore(path)
+        agent, seen = build_approval_agent('x = await danger(n=1)\nreturn x', record_store=parking)
+        first = await agent.run('go')
+        parking.close()
+        assert isinstance(first.output, DeferredToolRequests)
+        call_id = first.output.approvals[0].tool_call_id
+
+        resuming = SQLiteRecordStore(path)
+        other, other_seen = build_approval_agent(record_store=resuming)
+        resumed = await other.run(
+            message_history=first.all_messages(),
+            deferred_tool_results=DeferredToolResults(approvals={call_id: True}),
+        )
+        resuming.close()
+        assert resumed.output == "{'status': 'done', 'output': 1}"
+        assert (seen, other_seen) == ([False], [True])
+
+    async def test_a_parked_script_tool_resumes_in_another_agent_over_the_same_file(self, tmp_path: Path):
+        path = tmp_path / 'records.sqlite'
+        parking = SQLiteRecordStore(path)
+        agent, seen = build_approval_agent(
+            ToolCallPart('danger_twice', {'a': 1, 'b': 2}),
+            parks_on=2,
+            scripts=[DANGER_TWICE],
+            tools=not_danger_twice,
+            record_store=parking,
+        )
+        first = await agent.run('go')
+        parking.close()
+        assert isinstance(first.output, DeferredToolRequests)
+        call_id = first.output.approvals[0].tool_call_id
+
+        resuming = SQLiteRecordStore(path)
+        other, other_seen = build_approval_agent(
+            parks_on=2, scripts=[DANGER_TWICE], tools=not_danger_twice, record_store=resuming
+        )
+        resumed = await other.run(
+            message_history=first.all_messages(),
+            deferred_tool_results=DeferredToolResults(approvals={call_id: True}),
+        )
+        resuming.close()
+        assert resumed.output == '[1, 2]'
+        assert (seen, other_seen) == ([(1, False), (2, False)], [(2, True)])
 
 
 def hyphen_toolset(*names: str) -> FunctionToolset[None]:
