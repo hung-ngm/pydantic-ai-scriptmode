@@ -401,6 +401,71 @@ Known and accepted:
    grep of the output. Run `code-review` at `medium`; if it hits the rate limit, verify its
    candidate list by hand.
 
+### Plan for item 4: durable `RecordStore` (next)
+
+Goal, in glossary terms: a record survives the process. Today `InMemoryRecordStore` is a dict, so a
+run that parks in one process cannot resume in another, and two `UserError`s in `_toolset.py` say
+so. The protocol (`get(key)`, `put(key, record)`) already admits any backend; the README shows a
+hand-rolled Redis store. The item ships one durable store in the package and makes writing another
+trivial.
+
+Read first, in this order, and do not restate them in the ADR:
+
+- `pydantic_ai_scriptmode/_record.py`: `Record` (`steps`, `status`, `at`, `output`,
+  `suspend_attempts`, `parked`, `input`), `StepRecord` (`items` of `ItemRecord`), the protocol, and
+  the in-memory store. Every field is plain data; `dataclasses.asdict` round-trips it, and the
+  README "RecordStore" example is the deserializer written by hand.
+- `_toolset.py::_run` (the one place that reads and writes a record: get, execute, put, then raise on
+  a suspension) and `_script_tool_key` (a script tool's key is `conversation/name/digest`; a
+  `run_script` key is the conversation id, a UUID7 string from `ctx.conversation_id`).
+- `callscript/packages/callscript/src/durable.ts` (whole file, about 300 lines) and
+  `durable.test.ts`. callscript's durable runner stores a *run* (`StoredRun`: id, owner, script
+  hash, state, status, suspensions, resolutions, revision, timestamps, expiry) behind a four-call
+  storage contract whose floor is `compareAndSet` on a revision, plus a scheduler. Ours stores a
+  record per key with no revision; the ADR says which of those to take.
+- pydantic-ai has no store of its own to mirror; `pydantic_ai.durable_exec` is Temporal and DBOS
+  integration, and the toolset's Temporal error already says `run_script` must be an activity.
+
+What the ADR (`docs/adr/0006-durable-record-store.md`, `status: proposed`, voice of `0002`) must
+decide. Give a recommendation for each; `mattpocock-skills:grilling` on the ADR before the user's yes:
+
+- Serialization owned by the package. Recommended: `Record.to_dict()` and `Record.from_dict()`
+  (classmethods on `Record`, `StepRecord`, `ItemRecord`), so a store only moves a JSON object and
+  the README example shrinks to two lines. This is the first commit whatever the backend.
+- Backend. Recommended: SQLite through the standard library `sqlite3`, one table
+  `records(key TEXT PRIMARY KEY, record TEXT, updated_at TEXT)`, calls run in
+  `asyncio.to_thread` so the loop is not blocked and no dependency is added; a JSON-file-per-key
+  store is the alternative (no dependency either, but a key with slashes needs hashing or nested
+  directories, and atomic replace is per file). Name it `SQLiteRecordStore(path)`; `':memory:'`
+  gives a test double without the dict store.
+- Where it lives. Recommended: `pydantic_ai_scriptmode/_stores.py`, exported from `__init__`; no
+  optional extra, since `sqlite3` is stdlib.
+- Concurrency. Today `put` is last-write-wins and `run_script` is `sequential=True`, so the only
+  race is two script tool calls with identical arguments (accepted in the item 3 review).
+  Recommended: keep the protocol as is and document last-write-wins; callscript's revision CAS is
+  a protocol change (`put` would answer whether it won) that nothing here needs yet. Record the
+  option so it is not re-litigated.
+- Retention. Recommended: none in the package; a `delete(key)` is not in the protocol and the
+  README says how to prune by `updated_at`. Decide whether `updated_at` is worth a column for that.
+- Cross-process resume test shape. Two `ScriptModeToolset`s (or two agents) sharing one store
+  path, the first parks, the second resumes from `message_history` with the approval. That is the
+  behaviour the item exists for and must be a test, not a trial.
+
+Build order after the yes, `mattpocock-skills:tdd`, one commit per behaviour:
+
+1. `Record.to_dict`/`from_dict` round-trip, including a suspended fan-out with `items` and a
+   script tool record with `input`; the README Redis example rewritten on them (`tests/test_execute.py`
+   or a new `tests/test_record.py`).
+2. `SQLiteRecordStore`: `get` on a missing key is `None`; `put` then `get` round-trips; a second
+   `put` replaces; the file is created on first use; `':memory:'` works (`tests/test_stores.py`).
+3. End-to-end: park in one agent, resume in another sharing the store (`tests/test_script_mode.py`,
+   next to `TestScriptToolSuspension`), for `run_script` and for a script tool.
+4. Copy: README options table (`record_store` names the shipped store), "RecordStore" section,
+   the two `UserError`s in `_toolset.py` that mention the in-memory store; ADR `accepted`; this file.
+5. Trial: optional. No model-facing copy changes, so run the tutor `reset` task once with the
+   SQLite store behind both runs only if step 3 leaves doubt about the real `DeferredToolResults`
+   path; save as `.local/tutor-durable-1.txt` if run. Then `code-review` at `medium`.
+
 ### Plan for item 2: suspend and detach (done 2026-09-03; kept for the record)
 
 Goal, in glossary terms: a call that needs an approval parks the run instead of failing it. The
@@ -645,7 +710,9 @@ Call these with the Skill tool at the step named.
 
 - `mattpocock-skills:writing-for-agents`: when editing the `run_script` description, the
   announcement sentence, or the teaching copy; all are agent-facing prose.
-- `mattpocock-skills:domain-modeling`: step 4, and before any ADR in step 5.
+- `mattpocock-skills:domain-modeling`: step 4, and before any ADR in step 5. ADR 0006 will need
+  no new noun if the store is named for its backend; check whether "key" deserves a glossary
+  entry (today it is implementation vocabulary, not domain).
 - `mattpocock-skills:grilling`: on ADR 0006 before the user's yes, as on 0004 and 0005; the store
   backend and the key layout each have more than one defensible answer.
 - `mattpocock-skills:tdd`: any engine behaviour change from step 3 or 5.
