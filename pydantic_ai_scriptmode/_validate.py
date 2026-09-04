@@ -49,18 +49,36 @@ def _called_free_names(node: ast.expr) -> set[str]:
 
 
 def input_fields(plan: Plan) -> set[str]:
-    """The fields a plan reads off `input`, as `input.name` or `input['name']`."""
+    """The fields a plan reads off `input`, as `input.name`, `input['name']`, or `input.get('name')`.
+
+    The dict methods a script may call on `input` are not fields.
+    """
     fields: set[str] = set()
-    for step in plan.steps:
-        for source in _sources(step):
-            for node in ast.walk(parse_expression(source)):
-                if isinstance(node, ast.Attribute) and _is_input(node.value):
-                    fields.add(node.attr)
-                elif isinstance(node, ast.Subscript) and _is_input(node.value):
-                    key = _str_constant(node.slice)
+    sources = [source for step in plan.steps for source in _sources(step)]
+    if plan.output is not None:
+        sources.append(plan.output)
+    for source in sources:
+        tree = parse_expression(source)
+        methods: set[int] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and _is_input(node.func.value):
+                if node.func.attr in _INPUT_METHODS:
+                    methods.add(id(node.func))
+                if node.func.attr == 'get' and node.args:
+                    key = _str_constant(node.args[0])
                     if key is not None:
                         fields.add(key)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and _is_input(node.value) and id(node) not in methods:
+                fields.add(node.attr)
+            elif isinstance(node, ast.Subscript) and _is_input(node.value):
+                key = _str_constant(node.slice)
+                if key is not None:
+                    fields.add(key)
     return fields
+
+
+_INPUT_METHODS = frozenset({'get', 'keys', 'values', 'items'})
 
 
 def _is_input(node: ast.expr) -> bool:

@@ -83,3 +83,17 @@ class TestName:
     def test_the_name_must_be_callable_from_a_script_as_written(self):
         with pytest.raises(ValueError, match=r"'close-stale'.*identifier"):
             ScriptTool('close-stale', CLOSE_STALE, parameters=Params)
+
+    def test_the_return_line_counts_and_dict_methods_are_not_fields(self):
+        script = CLOSE_STALE.replace(
+            "return {'closed': len(closed)}", "return {'closed': len(closed), 'repo': input.rpeo}"
+        )
+        with pytest.raises(ValueError, match=r'`input.rpeo`'):
+            ScriptTool('close_stale', script, parameters=Params)
+        ScriptTool(
+            'close_stale',
+            "# Get\nissues = await list_issues(repo=input.get('repo', 'api'), n=len(input.keys()) + len(input.items()))",
+            parameters=Params,
+        )
+        with pytest.raises(ValueError, match=r'`input.rpeo`'):
+            ScriptTool('close_stale', "# Get\nissues = await list_issues(repo=input.get('rpeo'))", parameters=Params)
