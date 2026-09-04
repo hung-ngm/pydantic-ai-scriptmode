@@ -1,6 +1,6 @@
 # Handoff: pydantic-ai-scriptmode
 
-Date: 2026-09-04
+Date: 2026-09-05
 Workspace: `/Users/hungng/Documents/AI/experiments/pydantic-experiments/`
 Project: `pydantic-ai-scriptmode/`
 This file is the single source of truth for progress. Update it in place at the end of each
@@ -11,8 +11,8 @@ session; no handoff copies elsewhere (no temp-directory copies, no progress in m
 The package is complete through backlog item 6 as far as it can go without the user and the
 harness maintainers. Every item has an accepted ADR, was built by TDD one commit per behaviour,
 reviewed with `code-review` at `medium`, and pushed. `main` is in sync with `origin`, nothing
-uncommitted. `make all` is green: 236 passed with the `durability` group installed, 231 passed and
-2 module-level skips without it; no xfails.
+uncommitted. `make all` is green: 245 passed and 1 skip with the `durability` group installed, 240
+passed and 3 skips without it; no xfails.
 
 | Item | ADR | Commits | State |
 | --- | --- | --- | --- |
@@ -25,6 +25,7 @@ uncommitted. `make all` is green: 236 passed with the `durability` group install
 | Tutor harness Logfire instrumentation (the user's) | (none) | `caa6567`, `005dd57` | done; one open finding below |
 | 5. JS surface | 0007 | `6320b90` | closed without code |
 | 6. Upstreaming to `pydantic-ai-harness` | 0008 | `1274745`..`def0fd9` and after | waiting on the user, then the maintainers |
+| Examples: four teaching examples, tutor moved to `trials/` | (none) | `88251f9`..`759d8e0` and the README commit after | done 2026-09-05 |
 
 Remote: `origin` is the private repo `https://github.com/hung-ngm/pydantic-ai-scriptmode`. Commit
 straight to `main`, push after each commit, no force-push, no other branches.
@@ -108,6 +109,17 @@ retry (compile, validate, or a failed step) costs one more request and reuses se
 needing approval parks the run and the approved re-run resumes from the record (ADR 0004). A saved
 script is a script tool with its own record (ADR 0005). The record survives the process through
 `SQLiteRecordStore` (ADR 0006).
+
+`examples/` holds four teaching examples, one feature each, in the harness's shape (`build_agent(model=)`
+plus `main()`, `PYDANTIC_AI_MODEL` override, in-memory data returning dataclasses, the model's script
+printed): `basic.py` (issue triage: fold, fan-out, guard), `script_tool.py` (inventory: a saved
+`ScriptTool`), `approval.py` (accounts payable: park on `ApprovalRequired`, save messages and the
+request under `.local/approval/`, `--approve` resumes in a new process through `SQLiteRecordStore`),
+`engine.py` (weather, no agent). `tests/test_examples.py` builds each with `TestModel` and drives it
+with a fixed script through `FunctionModel`, asserting on the fake store's state; `examples/README.md`
+is the table. All four were run live on `claude-sonnet-5` on 2026-09-05; `approval.py` cost two
+compile retries before parking (the model put work inside `for` bodies), recovered by the teaching
+copy. The `examples` dependency group became `trials` (`logfire` only).
 
 `trials/tutor.py` is a measurement harness, not an example; nothing may depend on it. It runs four tasks (`practice`, `reviews`, `impossible`, `reset`; the last needs approval)
 on a plain-tools agent and a `ScriptMode` agent and prints a comparison table.

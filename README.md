@@ -20,7 +20,7 @@ agent = Agent('anthropic:claude-sonnet-5', capabilities=[ScriptMode()])
 
 
 @agent.tool_plain
-async def list_issues(repo: str) -> list[dict[str, object]]: ...
+async def list_issues(repo: str) -> list[Issue]: ...
 
 
 @agent.tool_plain
@@ -28,15 +28,16 @@ async def close_issue(repo: str, number: int) -> str: ...
 ```
 
 The model then sees one tool, `run_script`, whose description carries the signatures of the folded
-tools, and writes scripts like:
+tools (a dataclass or `BaseModel` return type renders its fields, and a script reads them as
+attributes), and writes scripts like:
 
 ```python
 # Close stale issues and report how many
 issues = await list_issues(repo='api')
-stale = [i for i in issues if i['stale']]
+stale = [i for i in issues if i.stale]
 if len(stale) == 0:
     return {'closed': 0}
-closed = [await close_issue(repo='api', number=i['number']) for i in stale[:20]]
+closed = [await close_issue(repo='api', number=i.number) for i in stale[:20]]
 return {'closed': len(closed)}
 ```
 
@@ -331,6 +332,15 @@ async def dispatch(step: CallStep, args: dict[str, object], *, resolution: objec
 result = await execute_plan(plan, dispatch=dispatch, input={'seed': 1})
 result.status, result.output, result.record
 ```
+
+## Examples
+
+`examples/` holds four small programs, one feature each, in a domain where that feature is the
+natural need: issue triage for the basic fold, inventory for a saved script tool, accounts payable
+for approval and resume through `SQLiteRecordStore`, and a weather lookup for the engine on its own
+with no agent. Each prints the script the model wrote next to what it returned; `examples/README.md`
+lists them. `trials/tutor.py` is the measurement harness behind the trial findings in
+`docs/HANDOFF.md`, not an example.
 
 ## Development
 
