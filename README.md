@@ -166,24 +166,30 @@ agent = Agent(..., capabilities=[ScriptMode(scripts=[close_stale])])
 
 The script is compiled where the tool is defined, so a script that does not compile raises
 `CompileError` at import. The call's arguments are bound as `input`; `parameters` is a Python type
-(a `TypedDict`, `BaseModel`, or dataclass, validated) or a JSON schema (passed through), and every
-`input.<field>` the script reads must be a declared parameter unless the schema is open. `returns`
+(a `TypedDict`, `BaseModel`, or dataclass, validated) or a JSON schema (checked for shape and
+`required` keys only), and every `input.<field>` the script reads, including on the `return` line
+and through `input.get('field')`, must be a declared parameter unless the schema is open. `returns`
 is optional and only shapes the signature the model sees; `description` defaults to the intent line.
 
 A script tool goes through `tools` like any other tool: by default it is folded and appears in the
 catalog next to the tools it composes, so a script can call it; a predicate that excludes it keeps
-it native. The saved script itself may call every tool eligible for folding, whether or not `tools`
+it native. Folded is the better default: in the trial a native script tool was called from inside a
+script anyway, costing a retry, and otherwise went unused. The saved script itself may call every tool eligible for folding, whether or not `tools`
 folded it, plus the script tools declared before it in `scripts`, so script tools compose and a
-cycle is impossible. A saved script that names a tool the agent does not have is a `UserError` when
-the tools are built. The call returns the plan's output, whether the last line or a guard produced
-it. A failed step raises `ModelRetry` naming the step, so the model can change the arguments or give
+cycle is impossible. A saved script that names a tool the agent does not have, or a name two tools
+sanitize to, is a `UserError` when the tools are built; one that names a tool the agent has but
+that is not available yet (undiscovered by `ToolSearch`, hidden by a `prepare` hook) is hidden for
+that step, with one warning, and appears once the tool does. The call returns the plan's output,
+whether the last line or a guard produced it. A failed step raises `ModelRetry` naming the step, so the model can change the arguments or give
 up, and a script that called the tool catches it as a failed call. A call that needs approval parks
 the script tool the same way it parks `run_script`, and the approval request's metadata names the
 script tool; called from inside a script, the outer script parks and one approval resumes both.
 
 Each script tool call keeps its own record, keyed by conversation, tool name, and input, so a saved
 script never reuses a step the model's script settled, two calls with different inputs do not share
-one, and the approved re-run finds the record it parked under.
+one, and the approved re-run finds the record it parked under. The record serves a retry or a
+resume only: a call that completed is not replayed from it, so the same arguments later in the
+conversation run the tools again.
 
 ### Limits
 

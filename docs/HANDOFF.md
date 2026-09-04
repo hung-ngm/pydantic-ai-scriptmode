@@ -1,4 +1,4 @@
-# Handoff: pydantic-ai-scriptmode (suspend and detach done, reviewed, and pushed; next is backlog item 3)
+# Handoff: pydantic-ai-scriptmode (script tools done, trialled, reviewed, and pushed; next is backlog item 4)
 
 Date: 2026-09-04
 Workspace: `/Users/hungng/Documents/AI/experiments/pydantic-experiments/`
@@ -8,10 +8,29 @@ session; do not write handoff copies elsewhere (no temp-directory copies, no pro
 
 ## Where things stand
 
-Backlog item 2, suspend and detach (ADR 0004), is built by TDD, trialled against a real model,
-committed, and pushed. `make all` (ruff format, ruff check, pyright strict, pytest) is green: 190
-passed, no xfails, no skips. `git log` on `main`, newest first (handoff-only commits omitted):
+Backlog item 3, script tools (ADR 0005), is built by TDD, trialled against a real model twice,
+reviewed, committed, and pushed. `make all` (ruff format, ruff check, pyright strict, pytest) is
+green: 210 passed, no xfails, no skips. `git log` on `main`, newest first (handoff-only commits
+omitted):
 
+- `23d2b06` Review fixes: a saved script over a tool that exists but is not available yet hides its script tool with a warning instead of failing the agent; JSON-schema parameters check the shape and `required` keys
+- `29396ba` Review fix: a completed script tool call is not replayed from its record; only a failed or parked one resumes
+- `ae4a65a` Review fix: the model's catalog folds only selected tools again; saved scripts see a quiet fold of every eligible tool, and an ambiguous or clashing name is a `UserError`
+- `e715574` Review fix: the `input` field check covers the return line and does not count dict methods as fields
+- `abdd7fb` Tutor harness: a `weak_topics` script tool; SCRIPTMODE_NATIVE_SCRIPTS=1 keeps it native; nested calls counted
+- `1e91d06` README documents script tools; `RecordStore` is keyed by a string; ADR 0005 records `Record.input`
+- `8a26c24` A script tool parks on an approval and resumes from its own record, called by the model or from a script
+- `c030e35` Engine: the record keeps its `input`, and a step that reads `input` is reused or re-entered only under the same one
+- `bab9512` A saved script is validated in `get_tools` against every eligible tool and the script tools before it; a bad name is a `UserError`
+- `b7a6c17` A script tool's bad argument or failed step is a `ModelRetry` naming it; a script catches it as a `CallError`
+- `e29dd9b` Pin: a script calls a folded script tool through the nested manager, and its parts nest in the metadata
+- `019564d` A native script tool call runs the saved plan with the arguments as `input` and returns its output
+- `f8f4032` Toolset serves script tools through the selector: folded into the catalog by default, native by predicate
+- `7771c10` `ScriptTool` refuses a read of an `input` field its parameters do not declare
+- `750a13b` `ScriptTool` renders `parameters` and `returns` as tool schemas and validates the arguments into `input`
+- `0346a69` `ScriptTool` compiles its script at construction; description defaults to the intent
+- `eda2934` Accept ADR 0005
+- `ef394a3` ADR 0005 (proposed): script tools, with Script tool and Input in the glossary
 - `3ee811f` Review fixes: an approval covers only the calls it was asked for; no record on resume is a `UserError`; a fan-out past the suspend limit keeps its done items; parks count only when surfaced; tool approval metadata passes through
 - `1c9b299` Engine: a resolution reaches only the call or items the record parked; a re-run from scratch is unresolved
 - `ab2d292` Tutor harness: `reset` task with an approval-gated tool; approvals are granted and the run continues
@@ -60,11 +79,27 @@ the Logfire hunks remain unstaged. One review finding is for the user, not this 
 `logfire auth` or a token raises or prompts before `main()`; `send_to_logfire='if-token-present'`
 (and `console=False` to keep the printed trace clean) would fix it.
 
-Steps 1 to 4 are done. Backlog items 0, 1, and 2 are done. The next item is 3, script-as-tool,
-which starts with an ADR.
+Steps 1 to 4 are done. Backlog items 0 to 3 are done. The next item is 4, a durable
+`RecordStore`, which starts with an ADR.
 
 Session history, newest first:
 
+- 2026-09-04 (second part): backlog item 3. Read callscript's `engine.tool` (`engine.ts`, tested in
+  `script-tool.test.ts`) and pydantic-ai's `ToolManager`; the finding that shaped the ADR is that
+  `_raw_execute` dispatches through the manager's own toolset, so a saved script can reach folded
+  tools only if `ScriptModeToolset` serves it. Wrote ADR 0005, grilled it (seven questions, the user
+  took every recommendation), built by TDD in fourteen commits. Two things changed during the build:
+  a saved script now sees every tool eligible for folding rather than only the folded ones (a test
+  showed that making a tool native for the model would hide it from the developer's script), and
+  the record gained `input` because the resume test parked again (a step reading `input` was never
+  carried). Trialled twice on the tutor harness (see "Trial findings"). `code-review` at `medium` ran as three angle agents; their seventeen candidates were verified by
+hand (the merged report had not arrived when the fixes were made): five fixed in four commits, the
+rest accepted or the user's. See "Review findings". Then this file.
+- 2026-09-04 (this file's state): the user's working copy of `examples/tutor.py` is the old HEAD
+  plus the Logfire hunks, so it is now behind `HEAD` (it lacks `weak_topics`, the
+  `SCRIPTMODE_NATIVE_SCRIPTS` switch, and `nested_calls`). To carry the Logfire hunks onto the
+  new HEAD: `git diff 1e91d06 -- examples/tutor.py > /tmp/logfire.patch && git checkout
+  examples/tutor.py && git apply --3way /tmp/logfire.patch`.
 - 2026-09-03 (fourth part): wrote ADR 0004 after reading callscript's suspend path and pydantic-ai
   2.37's approval plumbing. Two facts changed the handoff's plan: `DeferredToolRequests.build_results`
   sends `metadata={}` unless the caller copies it, so `ctx.tool_call_metadata` cannot carry the
@@ -129,9 +164,10 @@ what it owns.
 | `_plan.py` | `CallStep`, `DeriveStep`, `GuardStep`, `Plan`, `Limits`, `step_hash` | via compile tests |
 | `_compile.py` | `compile_script` -> `Plan` or `CompileError` (all issues at once) | `tests/test_compile.py` |
 | `_validate.py` | `validate_plan`, `ToolSignature` | `tests/test_validate.py` |
-| `_record.py` | `Record`, `StepRecord`, `ItemRecord`, `RecordStore` protocol, `InMemoryRecordStore`, `reusable_steps`, `parked_steps` | `tests/test_execute.py::TestRecordReuse`, `::TestSuspend` |
+| `_record.py` | `Record` (with `input`), `StepRecord`, `ItemRecord`, `RecordStore` protocol (keyed by a string), `InMemoryRecordStore`, `reusable_steps`, `parked_steps` | `tests/test_execute.py::TestRecordReuse`, `::TestSuspend` |
+| `_script_tool.py` | `ScriptTool`: a saved script compiled at construction, its parameter and return schemas, `validate_input`, the `input.<field>` check | `tests/test_script_tool.py` |
 | `_execute.py` | `Runner` (with `schedule`), `execute_plan`, `CallError`, `Suspend`, `Dispatch` | `tests/test_execute.py` |
-| `_toolset.py` | `ScriptModeToolset(WrapperToolset)`, `run_script` description, catalog stash and `get_instructions`, dispatch | `tests/test_script_mode.py` |
+| `_toolset.py` | `ScriptModeToolset(WrapperToolset)`, `run_script` description, catalog stash and `get_instructions`, dispatch, script tools served and run (`_ScriptToolsetTool`, `_call_script_tool`, `_run`) | `tests/test_script_mode.py` (`::TestScriptTools`, `::TestScriptToolSuspension`) |
 | `_capability.py` | `ScriptMode(AbstractCapability)`, discovery announcements | `tests/test_script_mode.py` |
 
 Public surface is `pydantic_ai_scriptmode/__init__.py` (`__all__`).
@@ -142,7 +178,9 @@ plain tools and one with `ScriptMode`, runs each task on both, prints every scri
 return, and ends with a comparison table (model requests, tool calls, total tokens).
 `uv run python examples/tutor.py [task ...]`, tasks `practice`, `reviews`, `impossible`, `reset`
 (the last needs approval for `reset_mastery`; the harness approves every request and continues);
-`SCRIPTMODE_DYNAMIC_CATALOG=1` turns the flag on for the script agent. Needs
+`SCRIPTMODE_DYNAMIC_CATALOG=1` turns the flag on for the script agent. The script agent also has one
+script tool, `weak_topics(threshold)`, folded by default; `SCRIPTMODE_NATIVE_SCRIPTS=1` keeps it
+native. Nested calls are counted through script tools' metadata. Needs
 `ANTHROPIC_API_KEY` in `.env` (git-ignored). All dependency groups are default in `[tool.uv]`, so
 plain `uv sync` and `uv run` install the linters and the Anthropic extra together.
 
@@ -239,6 +277,41 @@ the scheduler answer key and swap helper from the learning phase are redundant a
 
 ## Review findings (step 2, done 2026-09-03)
 
+Script tools review (2026-09-04, `code-review` at `medium`, three angle agents, seventeen
+candidates verified by hand). Fixed: `input_fields` skipped the `return` expression and counted
+`input.get`/`keys`/`items`/`values` as fields (`e715574`); folding every eligible tool for the
+model's catalog let a native-by-selector tool hide a folded tool with the same sanitized name, made
+the reserved-name error and the no-return-schema warning fire for native tools, and let a script
+tool named like a wrapped tool's sanitized name be silently dropped and its calls routed to the
+wrapped tool (`ae4a65a`: the loud fold is over the folded set again, saved scripts get a quiet
+fold of every eligible tool in which a collision drops both sides and is a `UserError` if a saved
+script calls it, and a script tool named like a wrapped tool's sanitized name is a `UserError`); a
+script tool called again with the same arguments in a conversation replayed its record and ran no
+tool (`29396ba`: a completed record is ignored; a failed or parked one is a retry or resume); a
+saved script over a `ToolSearch` tool not yet discovered raised from `get_tools` on every run
+(`23d2b06`: a known but unavailable tool hides the script tool for the step with one warning; an
+unknown name still raises; a hidden script tool is unavailable to later saved scripts); JSON-schema
+`parameters` were never checked, so a missing argument surfaced as a step failure (`23d2b06`:
+object shape and `required` keys are checked, types are not, and `InputError` becomes `ModelRetry`).
+Two candidates were about the user's Logfire work (see "Where things stand"). Accepted, below.
+
+- A deterministic saved script that fails for a transient reason raises `ModelRetry` each time and
+  spends the script tool's `max_retries` (the ScriptMode value) before `UnexpectedModelBehavior`.
+  ADR 0005 chose `ModelRetry` so the model can change the arguments; a `ToolFailed` would be the
+  terminal alternative. Revisit if a trial shows a retry loop with unchanged arguments.
+- Custom `RecordStore`s that parse the key as a UUID or constrain its charset break on a script
+  tool's `conversation/name/digest` key. Documented in the README and the protocol docstring; no
+  deprecation path, since the package has no release yet.
+- Two concurrent calls of one script tool with identical arguments share a key and race on the
+  record; if one parks and the other completes, the resumed one finds a completed record, ignores
+  it, and raises the no-record `UserError`. Identical concurrent inputs are rare and the failure is
+  loud. A per-call nonce in the key would fix it at the cost of resume across runs.
+- The script tool key hashes `json.dumps(input, default=str)` while reuse compares with `==`, so
+  `{'n': 1}` and `{'n': 1.0}` (JSON-schema parameters, no adapter) land in different records. Lost
+  reuse only, never a wrong value.
+- `run_script` scripts that read `input` (always `None`) are now reused like any step, where before
+  they never were. Correct, and the retry copy lists them as settled.
+
 Fixed, one commit each, listed under "Where things stand". The four candidates the previous
 session named resolved as: (1) `call_tool` split into `_Dispatcher` and `_execution_retry`; the
 compile and validate retries share `_render_issues`, the execution retry is a different shape and
@@ -313,13 +386,16 @@ Known and accepted:
 
 ## Next session: start here
 
-1. `cd pydantic-ai-scriptmode && git pull && uv sync --all-groups && make all`. Expect 190 passed.
+1. `cd pydantic-ai-scriptmode && git pull && uv sync --all-groups && make all`. Expect 210 passed.
    `git status` will show the user's uncommitted Logfire work (see above); leave it. To commit a
    change to `examples/tutor.py` without those hunks, apply the change to a copy of
    `git show HEAD:examples/tutor.py`, `git hash-object -w` the copy, and
    `git update-index --cacheinfo 100644,<sha>,examples/tutor.py`, as this session did.
-2. Backlog item 3, script-as-tool. ADR first (`docs/adr/0005-script-as-tool.md`), grill it, code
-   only after the user's yes. Read callscript's equivalent first if it has one (`packages/callscript/src/`).
+2. Backlog item 4, durable `RecordStore` (file or SQLite). ADR first
+   (`docs/adr/0006-durable-record-store.md`), grill it, code only after the user's yes. Read
+   callscript's `durable.ts` first. The record is plain data (`Record.input` included) and the
+   README's Redis example shows the shape; decide file against SQLite, the key layout (a script
+   tool's key has slashes), and whether the store ships in this package or as an extra.
 3. Process rule: gate every commit on `make all` succeeding
    (`make all > log && echo MAKE_OK || exit 1`, then `git commit`). Never chain a commit after a
    grep of the output. Run `code-review` at `medium`; if it hits the rate limit, verify its
@@ -495,9 +571,27 @@ arguments, and reason. Note on the call count: the harness counts nested calls f
 before the park (one `list_topics`, eight `get_mastery`) are not counted; the true total is 11,
 the same as plain tools. Not fixed, since the harness is temporary.
 
+Script tools (2026-09-04, `.local/tutor-scripttool-1.txt` with `weak_topics` folded, `-2.txt` with
+it native; tasks `practice`, `reviews`, `reset`). One run each:
+
+| Task | Plain tools | Script mode, `weak_topics` folded | Script mode, `weak_topics` native |
+| --- | --- | --- | --- |
+| practice | 4 req, 12 calls, 1 retry | 2 req, 13 calls, 0 retries | 3 req, 12 calls, 1 retry |
+| reviews | 4 req, 14 calls | 2 req, 15 calls | 2 req, 14 calls |
+| reset | 3 to 4 req, 9 to 11 calls | 2 req, one approval, 2 counted (see the earlier note) | 2 req, one approval |
+
+Folded: the model called `weak_topics` in every script, first time, with the right threshold each
+time (0.6, 0.8, 0.5), and in the reset task gathered it concurrently with `list_topics`; the
+parked fan-out resumed through the outer approval as designed. Native: the model called
+`weak_topics` from inside a script anyway (practice), paid one `unknown_function` retry (the copy
+recovered it in one turn), and in the other two tasks did the fan-out itself and never called the
+native tool. So the folded default is right and the README says so. The one extra call in the
+folded column is `weak_topics` itself, counted through its metadata. Copy unchanged.
+
 Trial transcripts: `.local/tutor-run-1.txt` (before) to `tutor-run-5.txt` (after),
 `.local/tutor-compare-1.txt` and `-2.txt` (plain against script), `.local/tutor-dynamic-1.txt` and
-`-2.txt` (flag on), `.local/tutor-suspend-1.txt` (approval).
+`-2.txt` (flag on), `.local/tutor-suspend-1.txt` (approval), `.local/tutor-scripttool-1.txt` and
+`-2.txt` (script tool folded, then native).
 
 ### 4. Keep CONTEXT.md current
 
@@ -506,7 +600,8 @@ term or add the term with an "Avoid" line. Use `mattpocock-skills:domain-modelin
 steps 2 and 3: the commits use only glossary terms (dispatch, fan-out, item, record, limits,
 teaching copy); the example's own nouns (topic, mastery, exercise) are domain data, not engine
 vocabulary. No change needed. Checked after item 1: added **Discovery** and **Announcement**; the diff's
-"revealed" became "discovered" everywhere (`8afc7e1`).
+"revealed" became "discovered" everywhere (`8afc7e1`). Item 3 added **Script tool** and **Input**
+(`ef394a3`); the code says "script tool", never macro or saved plan.
 
 ### 5. Deferred backlog
 
@@ -519,7 +614,7 @@ then `mattpocock-skills:tdd` for the code. One commit for the ADR, then commits 
 1. `dynamic_catalog`: done 2026-09-03 (`f52fe14` to `e2d9840`), ADR 0003.
 2. Suspend and detach: built 2026-09-03 (`3a0fc05` onward), ADR 0004. Trial and review outstanding;
    see "Next session".
-3. Script-as-tool: expose a saved plan as a native tool.
+3. Script tools: done 2026-09-04 (`ef394a3` to `abdd7fb`), ADR 0005.
 4. Durable `RecordStore`: file or SQLite; the protocol already supports it (README example).
    Now cheap to do safely because records can no longer hold closures.
 5. JS surface: a second front end compiling to the same `Plan`.
@@ -551,8 +646,8 @@ Call these with the Skill tool at the step named.
 - `mattpocock-skills:writing-for-agents`: when editing the `run_script` description, the
   announcement sentence, or the teaching copy; all are agent-facing prose.
 - `mattpocock-skills:domain-modeling`: step 4, and before any ADR in step 5.
-- `mattpocock-skills:grilling`: on ADR 0004 before the user's yes; the suspension shape and the
-  resume path each have more than one defensible answer.
+- `mattpocock-skills:grilling`: on ADR 0006 before the user's yes, as on 0004 and 0005; the store
+  backend and the key layout each have more than one defensible answer.
 - `mattpocock-skills:tdd`: any engine behaviour change from step 3 or 5.
 - `code-review` (or `mattpocock-skills:code-review`): before pushing a step 5 change. Run it at
   `medium`, not `high`: the `high` multi-agent run exhausted the session limit last time.

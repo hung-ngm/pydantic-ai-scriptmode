@@ -45,9 +45,15 @@ which parks the outer step as it does for any tool; the outer approval re-dispat
 A step that fails raises `ModelRetry` naming the step and its error: called by the model that is a
 retry message the model answers by changing the arguments or giving up, within the script tool's
 `max_retries`; called from a script it is a `CallError` the error branch can catch. A saved script
-that names a tool the fold does not hold is a `UserError` raised from `get_tools`, because the
-script is the developer's and the fix is theirs; the validator also checks every `input.<field>`
-the script reads against the declared parameters, so a misspelt field fails at construction.
+that names a tool the agent does not have is a `UserError` raised from `get_tools`, because the
+script is the developer's and the fix is theirs; one that names a tool the agent has but that is
+not available this step (undiscovered by `ToolSearch`, hidden by a `prepare` hook) hides the script
+tool for the step with one warning, since availability is dynamic and an error there would take
+the whole agent down on every run (found in review). The validator also checks every
+`input.<field>` the script reads against the declared parameters, so a misspelt field fails at
+construction. A script tool's record serves a retry or a resume only: a completed call is not
+replayed from it, because the same arguments later in the conversation are a new call and the
+model has no way to force a re-run as it has with a script (found in review).
 
 The costs. `RecordStore` is keyed by a record key, not only a conversation id; the protocol's
 parameter is renamed and the README example changes, though every existing store keeps working
@@ -83,8 +89,9 @@ catalog already teaches how tools are called.
 - Let a guard inside a script tool end the hosting run, as callscript's `EarlyReturnSignal`
   composes: rejected, a Pydantic AI tool returns a value to its caller and nothing else; a script
   that wants to stop on the script tool's result writes its own guard.
-- Hide a script tool whose tools are not all folded yet, with a warning, instead of raising: not
-  taken, a silently missing tool is harder to debug than an error naming the tool; revisit if a
-  saved script over tools behind `ToolSearch` turns out to be a real case.
+- Raise for every saved script that cannot be validated this step, including over a tool that
+  exists but is not available yet: the first cut did this; rejected in review, since a saved script
+  over a `ToolSearch` tool would fail every run before the model could search. An unknown name
+  still raises; only a known, unavailable tool hides.
 - Accept a `Plan` (or `plan.to_dict()` from a return's metadata) as well as script text: rejected,
   see the costs.
