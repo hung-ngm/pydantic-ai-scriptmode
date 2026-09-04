@@ -520,8 +520,15 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
         input: Any,
         script_tool: str | None = None,
     ) -> ExecuteResult:
-        """Execute `plan` against the record under `key`, save the record, and park on a suspension."""
+        """Execute `plan` against the record under `key`, save the record, and park on a suspension.
+
+        A script tool's record serves a retry or a resume only: a call that completed is not replayed
+        from it, since the same arguments later in the conversation are a new call whose tools may
+        answer differently (found in review).
+        """
         record = await self.record_store.get(key) if key is not None else None
+        if script_tool is not None and record is not None and record.status in ('done', 'returned'):
+            record = None
         # The approved re-run resumes from the record, not from `ctx.tool_call_metadata`: Pydantic AI
         # echoes metadata back only when the caller copies it into `DeferredToolResults`.
         resolutions: dict[str, Any] = {}

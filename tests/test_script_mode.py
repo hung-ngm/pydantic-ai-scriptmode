@@ -1019,3 +1019,18 @@ class TestFoldSemantics:
             pytest.raises(UserError, match=r"(?s)'twice'.*`foo_bar`.*'foo-bar'.*'foo_bar'"),
         ):
             await agent.run('go')
+
+
+class TestScriptToolRecords:
+    async def test_a_completed_call_is_not_replayed_but_a_failed_one_reuses_its_settled_steps(self):
+        agent, closed = build_agent(
+            ToolCallPart('close_stale', {'repo': 'api'}),
+            ToolCallPart('close_stale', {'repo': 'api'}),
+            scripts=[CLOSE_STALE],
+            tools=not_close_stale,
+        )
+        result = await agent.run('go')
+        assert result.output == "{'closed': 2}"
+        assert closed == ['api#1', 'api#3', 'api#1', 'api#3']
+        returns = [p for m in result.all_messages() for p in m.parts if isinstance(p, ToolReturnPart)]
+        assert [len(r.metadata['tool_calls']) for r in returns] == [3, 3]
