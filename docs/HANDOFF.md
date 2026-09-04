@@ -8,24 +8,12 @@ session; no handoff copies elsewhere (no temp-directory copies, no progress in m
 
 ## Status
 
-The package is complete through backlog item 6 as far as it can go without the user and the
-harness maintainers. Every item has an accepted ADR, was built by TDD one commit per behaviour,
-reviewed with `code-review` at `medium`, and pushed. `main` is in sync with `origin`, nothing
-uncommitted. `make all` is green: 245 passed and 1 skip with the `durability` group installed, 240
-passed and 3 skips without it; no xfails.
-
-| Item | ADR | Commits | State |
-| --- | --- | --- | --- |
-| Package, engine, adapters, README, first trial | 0001, 0002 | `79005aa`..`1c87782` | done 2026-09-03 |
-| 0. Fan-out bound through a derivation | (none) | `57517ff` | done |
-| 1. `dynamic_catalog` | 0003 | `f52fe14`..`e2d9840` | done |
-| 2. Suspend and detach | 0004 | `3a0fc05`..`3ee811f` | done |
-| 3. Script tools | 0005 | `ef394a3`..`23d2b06` | done |
-| 4. Durable `RecordStore` | 0006 | `879088f`..`5c51cf7` | done |
-| Tutor harness Logfire instrumentation (the user's) | (none) | `caa6567`, `005dd57` | done; one open finding below |
-| 5. JS surface | 0007 | `6320b90` | closed without code |
-| 6. Upstreaming to `pydantic-ai-harness` | 0008 | `1274745`..`def0fd9` and after | waiting on the user, then the maintainers |
-| Examples: four teaching examples, tutor moved to `trials/` | (none) | `88251f9`..`759d8e0` and the README commit after | done 2026-09-05 |
+Complete as far as it can go without the user and the harness maintainers. Backlog items 0 to 4
+are built (ADRs 0001 to 0006), item 5 was closed without code (ADR 0007), item 6 is decided (ADR
+0008) and waits on the user. Four teaching examples landed on 2026-09-05 (`88251f9`..`776021d`).
+Every item was built by TDD, one commit per behaviour, and pushed; `git log` is the record. `main`
+is in sync with `origin`, nothing uncommitted. `make all` is green: 245 passed and 1 skip with the
+`durability` group installed, 240 passed and 3 skips without it; no xfails.
 
 Remote: `origin` is the private repo `https://github.com/hung-ngm/pydantic-ai-scriptmode`. Commit
 straight to `main`, push after each commit, no force-push, no other branches.
@@ -35,8 +23,8 @@ straight to `main`, push after each commit, no force-push, no other branches.
 Ask the user whether steps 1 and 2 happened before doing anything else.
 
 1. **User: publish 0.1.0 to PyPI.** `uv build && uv publish` with a PyPI token the user holds. The
-   name `pydantic-ai-scriptmode` was free on 2026-09-04 and `[project.urls]` is set. If the user
-   would rather not publish, delete the `pip install` line from `docs/upstream/issue.md`.
+   name was free on 2026-09-04 and `[project.urls]` is set. If the user would rather not publish,
+   delete the `pip install` line from `docs/upstream/issue.md`.
 2. **User: post the capability-request issue.** `docs/upstream/issue.md` is written in the fields of
    the harness `Capability Request` template
    (<https://github.com/pydantic/pydantic-ai-harness/issues/new/choose>). Record the issue number
@@ -45,12 +33,15 @@ Ask the user whether steps 1 and 2 happened before doing anything else.
    waiting, in this order:
    - A Temporal test whose script fans out past `max_concurrency` and replays; the two replaying
      tests run one activity at a time (review finding, not done).
-   - An ADR amendment for making the record store's `get`/`put` durable operations
+   - An ADR amendment making the record store's `get`/`put` durable operations
      (`@durable_operation`, `pydantic_ai.durable_exec`), so the record rides on the journal instead
-     of needing a workflow-scoped store. This is the "record on history" question ADR 0008 predicted
+     of needing a workflow-scoped store. It is the "record on history" question ADR 0008 predicted
      and the first thing a harness reviewer will ask. Grill it before code.
-   - Re-run the tutor trial to confirm the comparison table below still holds with the `Event`
-     scheduler (behaviour-preserving by the 33 engine tests, but the table is from the old loop).
+   - Re-run `trials/tutor.py` to confirm the trial table below still holds with the `Event`
+     scheduler (behaviour-preserving by the engine tests, but the table is from the old loop).
+   - Optional, offered to the user, not asked for: a second prompt in `examples/script_tool.py`
+     that the saved script cannot answer, so one output shows a script calling `restock_low` and
+     one composing the primitives. Adds a fixed script to the test and a round trip when run live.
 4. **When the answer is yes: the port.** Decided in ADR 0008; the harness rules are its `AGENTS.md`
    and `agent_docs/{capability-authoring,review-checklist,docs-conventions}.md`. Fork
    `pydantic/pydantic-ai-harness` under the user's account, one branch, one PR linking the issue.
@@ -66,22 +57,22 @@ Ask the user whether steps 1 and 2 happened before doing anything else.
    - `tests/script_mode/`: this repo's tests with imports rewritten, Temporal and DBOS included.
      The harness suite does not error on warnings (the DBOS filter can go) and enforces 100% branch
      coverage (expect to add cases). Harness writing style: no em-dashes, no superlatives.
+   - The examples already fit the harness's `examples/` shape (`build_agent(model=)`, `main()`,
+     `PYDANTIC_AI_MODEL`, construction test); carry one over if the maintainers want it.
    - After the merge: archive this repo with a README pointer; leave the PyPI release.
 
 ## Read first, in this order
 
-- `README.md`: usage, how it works, grammar table, options, retry messages, `RecordStore`,
-  durable execution.
+- `README.md`: usage, how it works, grammar table, options, script tools, limits, `RecordStore`,
+  durable execution, failure messages, engine-only use, examples.
 - `CONTEXT.md`: the glossary. Use its words in code, docs, tests, and this file.
-- `docs/adr/0001` to `0008`: inert plan, Python surface, catalog in instructions, suspend and
-  resume from the record, script tools, durable record and SQLite store, no JS surface,
-  upstreaming issue-first and vendored. Each ends with its rejected options; do not re-litigate
-  them without new facts.
+- `docs/adr/0001` to `0008`. Each ends with its rejected options; do not re-litigate them without
+  new facts.
 - `docs/upstream/issue.md`: the capability-request draft.
 - Project memory `~/.claude/projects/-Users-hungng-Documents-AI-experiments-pydantic-experiments/memory/scriptmode-project.md`
   (loaded via `MEMORY.md`).
 
-## Package layout
+## Layout
 
 `pydantic_ai_scriptmode/`, engine first, adapters last; every module docstring says what it owns.
 Public surface is `__init__.py` (`__all__`).
@@ -93,13 +84,15 @@ Public surface is `__init__.py` (`__all__`).
 | `_plan.py` | `CallStep`, `DeriveStep`, `GuardStep`, `Plan`, `Limits`, `step_hash` | via compile tests |
 | `_compile.py` | `compile_script` -> `Plan` or `CompileError` (all issues at once) | `test_compile.py` |
 | `_validate.py` | `validate_plan`, `ToolSignature` | `test_validate.py` |
-| `_record.py` | `Record` (`input`, `to_dict`, `from_dict`), `StepRecord`, `ItemRecord`, `RecordStore` protocol, `InMemoryRecordStore`, `reusable_steps`, `parked_steps` | `test_record.py`, `test_execute.py::TestRecordReuse`, `::TestSuspend` |
+| `_record.py` | `Record`, `StepRecord`, `ItemRecord`, `RecordStore` protocol, `InMemoryRecordStore`, `reusable_steps`, `parked_steps` | `test_record.py`, `test_execute.py::TestRecordReuse`, `::TestSuspend` |
 | `_stores.py` | `SQLiteRecordStore(path, timeout=)`: one table, one owned thread and connection, `close()` | `test_stores.py`, `test_script_mode.py::TestDurableResume` |
 | `_script_tool.py` | `ScriptTool`: a saved script compiled at construction, its schemas, `validate_input` | `test_script_tool.py` |
 | `_execute.py` | `Runner` (`schedule`), `execute_plan`, `CallError`, `Suspend`, `Dispatch` | `test_execute.py` |
 | `_toolset.py` | `ScriptModeToolset(WrapperToolset)`, `run_script` description, catalog stash and `get_instructions`, dispatch, script tools served and run | `test_script_mode.py` |
 | `_capability.py` | `ScriptMode(AbstractCapability)`, discovery announcements | `test_script_mode.py` |
 | (composition) | `ScriptMode` under `TemporalDurability` and `DBOSDurability` | `test_temporal.py`, `test_dbos.py` (skip without the `durability` group); `tests/_shared_store.py` is the worker-global store one test passes through the sandbox |
+| `examples/` | `basic.py`, `script_tool.py`, `approval.py`, `engine.py`; `examples/README.md` is the table | `test_examples.py`: each built with `TestModel`, driven by a fixed script through `FunctionModel`, asserted on the fake store's state |
+| `trials/tutor.py` | the measurement harness behind the trial table: four tasks, plain tools against `ScriptMode`, Logfire metrics. Nothing may depend on it | none |
 
 How a run goes: the model gets one tool, `run_script`, whose description carries the folded tools'
 signatures, and answers with one script. `call_tool` compiles it to a plan, validates it against the
@@ -110,23 +103,14 @@ needing approval parks the run and the approved re-run resumes from the record (
 script is a script tool with its own record (ADR 0005). The record survives the process through
 `SQLiteRecordStore` (ADR 0006).
 
-`examples/` holds four teaching examples, one feature each, in the harness's shape (`build_agent(model=)`
-plus `main()`, `PYDANTIC_AI_MODEL` override, in-memory data returning dataclasses, the model's script
-printed): `basic.py` (issue triage: fold, fan-out, guard), `script_tool.py` (inventory: a saved
-`ScriptTool`), `approval.py` (accounts payable: park on `ApprovalRequired`, save messages and the
-request under `.local/approval/`, `--approve` resumes in a new process through `SQLiteRecordStore`),
-`engine.py` (weather, no agent). `tests/test_examples.py` builds each with `TestModel` and drives it
-with a fixed script through `FunctionModel`, asserting on the fake store's state; `examples/README.md`
-is the table. All four were run live on `claude-sonnet-5` on 2026-09-05; `approval.py` cost two
-compile retries before parking (the model put work inside `for` bodies), recovered by the teaching
-copy. The `examples` dependency group became `trials` (`logfire` only).
-
-`trials/tutor.py` is a measurement harness, not an example; nothing may depend on it. It runs four tasks (`practice`, `reviews`, `impossible`, `reset`; the last needs approval)
-on a plain-tools agent and a `ScriptMode` agent and prints a comparison table.
-`SCRIPTMODE_DYNAMIC_CATALOG=1` and `SCRIPTMODE_NATIVE_SCRIPTS=1` flip the two options; `PYDANTIC_AI_MODEL`
-overrides the model. Needs
-`ANTHROPIC_API_KEY` in `.env` (git-ignored; a standard workspace key, not an identity-linked one).
-`.local/` is git-ignored scratch holding the trial transcripts.
+Examples follow the harness's shape: `build_agent(model=DEFAULT_MODEL)` plus `main()`,
+`PYDANTIC_AI_MODEL` overrides `anthropic:claude-sonnet-5`, `.env` via `load_dotenv`, in-memory data
+returning dataclasses, the model's script printed next to its return. One domain per feature: issue
+triage (fold, fan-out, guard), inventory (a saved `ScriptTool`), accounts payable (park on
+`ApprovalRequired`, messages and request saved under `.local/approval/`, `--approve` resumes in a
+new process through `SQLiteRecordStore`), weather (engine only). All four ran live on
+`claude-sonnet-5` on 2026-09-05. `.env` holds `ANTHROPIC_API_KEY` (git-ignored; a standard
+workspace key).
 
 ## Decisions made while coding (not in the ADRs or README)
 
@@ -138,11 +122,10 @@ Engine:
   `Runner.ready_steps`, not an edge.
 - `Runner.schedule` is event-driven: in-flight steps are tasks; one `asyncio.Event` (`woken`), set
   by each task's done callback, wakes the loop, which reads settled tasks in launch order and
-  launches what became ready. It was `asyncio.wait(FIRST_COMPLETED)` until item 6: Temporal's
-  sandbox warns on `asyncio.wait` (non-deterministic `done` order; a `UserWarning`, which this
-  suite's `filterwarnings = ['error']` turned into a workflow-task failure Temporal retried
-  forever). A halt gates new launches only, so in-flight steps settle and the record holds what
-  their tools did; when `run_step` raises, a `finally` cancels the rest.
+  launches what became ready. It replaced `asyncio.wait(FIRST_COMPLETED)`, which Temporal's sandbox
+  warns on (a `UserWarning` that `filterwarnings = ['error']` turned into a workflow-task failure
+  retried forever). A halt gates new launches only, so in-flight steps settle and the record holds
+  what their tools did; when `run_step` raises, a `finally` cancels the rest.
 - A fan-out gathers with `return_exceptions=True`; `_on_error='skip'` on a fan-out settles only the
   failed items to `None`. A whole-step skip is for a single call. `try`/`except` takes no fan-out.
 - Fan-out bound must be a literal (`xs[:N]`, `xs[a:N]`, a list display), on the fan-out or on the
@@ -197,20 +180,33 @@ Durability (item 6):
   toolset's activity (`agent__<name>__toolset__<id>__call_tool`); history replays, and a corrected
   script re-dispatches only the unsettled step.
 - The in-memory record must be workflow-scoped. The default sandbox re-imports a module it does not
-  pass through per execution, so a module-level `ScriptMode()` is fresh per run (two executions with
-  the same `conversation_id` on one worker replayed cleanly). A worker-global store plus a stable
-  `conversation_id` lets a replay reuse the record, skip activities, and fail with
-  `NondeterminismError`; pinned by `test_worker_global_store_diverges_on_replay` through
+  pass through per execution, so a module-level `ScriptMode()` is fresh per run. A worker-global
+  store plus a stable `conversation_id` lets a replay reuse the record, skip activities, and fail
+  with `NondeterminismError`; pinned by `test_worker_global_store_diverges_on_replay` through
   `tests/_shared_store.py`. The engine-level answer is the durable-operation store in "Next steps".
 - `SQLiteRecordStore` is refused at construction inside a workflow (its thread pool); pinned.
 - Under `DBOSDurability` the agent runs in the workflow function, `run_sync` works, and model
   requests are the journaled steps. A DBOS app name is at most 30 characters; `run_sync` in a DBOS
   workflow trips a `DeprecationWarning` from `pydantic_graph`, filtered per module.
 - Test mechanics: the Temporal dev server starts on an ephemeral port with `coverage` passed
-  through (`PydanticAIPlugin` adds `pydantic_ai` and `pydantic_graph` itself); a hung workflow is a
-  failing workflow task being retried, so every `execute_workflow` has `execution_timeout=30s` and
-  the failure is read with `-o log_cli=true -o log_cli_level=WARNING`. `uv run --group durability`
-  leaves the group installed, so `make all` runs the durability tests until the next `uv sync`.
+  through; a hung workflow is a failing workflow task being retried, so every `execute_workflow`
+  has `execution_timeout=30s` and the failure is read with `-o log_cli=true -o log_cli_level=WARNING`.
+  `uv run --group durability` leaves the group installed, so `make all` runs the durability tests
+  until the next `uv sync`; a plain `uv sync` prunes it and pyright then fails on `test_temporal.py`,
+  so sync with `uv sync --group durability`.
+
+Examples:
+
+- Tools live on a module-level `FunctionToolset` (pyright strict flags nested tool functions as
+  unused); `build_agent` returns `Agent[None, str]` with `deps_type=type(None)`. `result.usage` is a
+  property in pydantic-ai 2.37.
+- `approval.py` takes `store=` so a test and `main()` can close it; the default builds a
+  `SQLiteRecordStore` under `STATE_DIR`, which the test monkeypatches. A resume needs the message
+  history (it carries the `conversation_id` the record is keyed by), the `DeferredToolRequests`
+  (round-trips through `TypeAdapter`), and the store.
+- `zip` with tuple unpacking works in comprehensions of the expression subset.
+- `test_examples_present` lists the files, so each example commit updated the list; the fixed
+  scripts in the tests double as what a good script looks like.
 
 ## Trial findings (`anthropic:claude-opus-5`, one run each; not a benchmark)
 
@@ -265,36 +261,42 @@ bound, and backlog item 0.
   behaviour difference.
 - Under Temporal a worker-global store plus a stable `conversation_id` diverges on replay (pinned;
   "Durability" above). Whether the store becomes a durable operation is decided at the port.
+- Models sometimes put work inside a `for` body on the first script (`approval.py` live run, two
+  compile retries); the teaching copy recovers it. Not an example bug.
 
 ## Process rules
 
 - An ADR before any backlog item (`docs/adr/000N-<slug>.md`, `status: proposed`, in the voice of
   `0002`: one paragraph of decision, one of cost, then the rejected options), grilled before the
-  user's yes, then TDD one commit per behaviour.
+  user's yes, then TDD one commit per behaviour. Examples and docs need no ADR.
 - Gate every commit on `make all` succeeding (`make all > log && echo MAKE_OK || exit 1`, then
   `git commit`); never chain a commit after a grep of the output.
 - Before an ADR, grep the diff's nouns against `CONTEXT.md` and add any new term with an "Avoid"
-  line.
+  line. Example domains are not glossary terms.
 - Run `code-review` at `medium` before the handoff; if it hits the session limit, retry once, then
   verify the candidates by hand. Update this file in place at the end.
 - Outward actions on pydantic's repos (issue, fork, PR) and the PyPI release are the user's; the
   agent drafts.
+- Run an example live once after its offline test passes; it costs a few cents.
 
 ## Reference repos (read-only siblings)
 
 - `callscript/packages/callscript/src/` (`validate.ts`, `execute.ts`, `durable.ts`, `js.ts`,
   `types.ts`) for behaviour to compare against.
 - `pydantic-ai-harness/`: `pydantic_ai_harness/code_mode/` for conventions, `tests/code_mode/` for
-  the durability test shape, `AGENTS.md` and `agent_docs/` for the rules.
+  the durability test shape, `examples/` and `tests/test_examples.py` for the example shape,
+  `AGENTS.md` and `agent_docs/` for the rules.
 - Installed `pydantic_ai` 2.37.0 in `.venv` for exact signatures.
 
 ## Verification commands
 
 ```bash
 cd pydantic-ai-scriptmode
-make all            # format, lint, typecheck, test
-uv run pytest -q    # tests only
-make durability     # Temporal and DBOS composition tests; installs the `durability` group
+make all                       # format, lint, typecheck, test
+uv run pytest -q               # tests only
+make durability                # Temporal and DBOS composition tests; installs the `durability` group
+uv run examples/basic.py       # any example live; approval.py, then approval.py --approve
+uv run trials/tutor.py         # the comparison harness, all four tasks
 ```
 
 `timeout` is not available on this macOS shell; bound a run with a Python subprocess if needed.
@@ -302,7 +304,8 @@ make durability     # Temporal and DBOS composition tests; installs the `durabil
 ## Suggested skills
 
 - `mattpocock-skills:grilling`: on any new ADR or amendment before the user's yes (two rounds
-  worked for 0006 and 0008: the frontier first, then what hung off the main choice).
+  worked for 0006 and 0008: the frontier first, then what hung off the main choice; the examples
+  took three, the third opened by a late "different use cases" ask).
 - `mattpocock-skills:domain-modeling`: before an ADR, for any noun the diff adds.
 - `mattpocock-skills:tdd`: every behaviour change; the seams are the public `Agent` path and the
   engine's `execute_plan`.
