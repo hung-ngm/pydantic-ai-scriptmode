@@ -45,10 +45,9 @@ lint = [
     'ruff>=0.14',
     'pyright>=1.1.408',
 ]
-examples = [
+# The trial harness only; the examples run on the package's own dependencies.
+trials = [
     'logfire>=4.41.0',
-    'pydantic-ai-slim[anthropic]>=2.36.0',
-    'python-dotenv>=1.0',
 ]
 # Not a default group: `temporalio` downloads a dev server on first use and `dbos` pulls SQLAlchemy.
 # `make durability` installs it; `tests/test_temporal.py` and `tests/test_dbos.py` skip without it.
@@ -57,8 +56,8 @@ durability = [
 ]
 
 [tool.uv]
-# Every sync installs every group but `durability`, so `uv run` for the example never prunes the linters.
-default-groups = ['dev', 'lint', 'examples']
+# Every sync installs every group but `durability`, so `uv run` for the trial never prunes the linters.
+default-groups = ['dev', 'lint', 'trials']
 
 [tool.hatch.build.targets.wheel]
 packages = ['pydantic_ai_scriptmode']

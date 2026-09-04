@@ -3,9 +3,9 @@
 The shape ScriptMode is for: fan out over a list, filter on what came back, act on the survivors.
 Plain tool use pays a model round trip per call; a script pays one.
 
-Run:  uv run python examples/tutor.py [task ...]   (tasks: practice, reviews, impossible, reset)
+Run:  uv run python trials/tutor.py [task ...]   (tasks: practice, reviews, impossible, reset)
 Reads ANTHROPIC_API_KEY from `.env` via python-dotenv; a standard workspace key, not an identity-linked
-one. Override the model with SCRIPTMODE_TRIAL_MODEL; set SCRIPTMODE_DYNAMIC_CATALOG=1 to trial the catalog in instructions.
+one. Override the model with PYDANTIC_AI_MODEL; set SCRIPTMODE_DYNAMIC_CATALOG=1 to trial the catalog in instructions.
 The script agent also has one script tool, `weak_topics`; set SCRIPTMODE_NATIVE_SCRIPTS=1 to keep it native.
 """
 
@@ -36,11 +36,13 @@ from typing_extensions import TypedDict
 from pydantic_ai_scriptmode import RUN_SCRIPT_TOOL_NAME, ScriptMode, ScriptTool
 
 load_dotenv()
-MODEL = os.environ.get('SCRIPTMODE_TRIAL_MODEL', 'anthropic:claude-opus-5')
+MODEL = os.environ.get('PYDANTIC_AI_MODEL', 'anthropic:claude-opus-5')
 DYNAMIC_CATALOG = os.environ.get('SCRIPTMODE_DYNAMIC_CATALOG', '') == '1'
 NATIVE_SCRIPTS = os.environ.get('SCRIPTMODE_NATIVE_SCRIPTS', '') == '1'
 
 logfire.configure(
+    send_to_logfire='if-token-present',  # a clone without a token runs without prompting
+    console=False,
     service_name='pydantic-ai-scriptmode-tutor',
     service_version='0.1.0',
     environment=os.environ.get('DEPLOYMENT_ENVIRONMENT', 'development'),

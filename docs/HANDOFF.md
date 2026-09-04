@@ -50,9 +50,6 @@ Ask the user whether steps 1 and 2 happened before doing anything else.
      and the first thing a harness reviewer will ask. Grill it before code.
    - Re-run the tutor trial to confirm the comparison table below still holds with the `Event`
      scheduler (behaviour-preserving by the 33 engine tests, but the table is from the old loop).
-   - The open Logfire finding: `examples/tutor.py` calls `logfire.configure()` at import with
-     `send_to_logfire` defaulting to `True`, so a clone without a token prompts before `main()`;
-     `send_to_logfire='if-token-present'` and `console=False` would fix it. The user's call.
 4. **When the answer is yes: the port.** Decided in ADR 0008; the harness rules are its `AGENTS.md`
    and `agent_docs/{capability-authoring,review-checklist,docs-conventions}.md`. Fork
    `pydantic/pydantic-ai-harness` under the user's account, one branch, one PR linking the issue.
@@ -112,10 +109,10 @@ needing approval parks the run and the approved re-run resumes from the record (
 script is a script tool with its own record (ADR 0005). The record survives the process through
 `SQLiteRecordStore` (ADR 0006).
 
-`examples/tutor.py` is a test harness first; the user intends to remove it, so nothing may depend
-on it. It runs four tasks (`practice`, `reviews`, `impossible`, `reset`; the last needs approval)
+`trials/tutor.py` is a measurement harness, not an example; nothing may depend on it. It runs four tasks (`practice`, `reviews`, `impossible`, `reset`; the last needs approval)
 on a plain-tools agent and a `ScriptMode` agent and prints a comparison table.
-`SCRIPTMODE_DYNAMIC_CATALOG=1` and `SCRIPTMODE_NATIVE_SCRIPTS=1` flip the two options. Needs
+`SCRIPTMODE_DYNAMIC_CATALOG=1` and `SCRIPTMODE_NATIVE_SCRIPTS=1` flip the two options; `PYDANTIC_AI_MODEL`
+overrides the model. Needs
 `ANTHROPIC_API_KEY` in `.env` (git-ignored; a standard workspace key, not an identity-linked one).
 `.local/` is git-ignored scratch holding the trial transcripts.
 
