@@ -789,3 +789,19 @@ class TestScriptTools:
             'close_issue',
             'close_issue',
         ]
+
+    async def test_a_script_calls_a_folded_script_tool(self):
+        agent, closed = build_agent("r = await close_stale(repo='api')\nreturn r.closed", scripts=[CLOSE_STALE])
+        result = await agent.run('go')
+        assert result.output == "{'status': 'done', 'output': 2}"
+        assert closed == ['api#1', 'api#3']
+        part = result.all_messages()[2].parts[0]
+        assert isinstance(part, ToolReturnPart)
+        assert [c.tool_name for c in part.metadata['tool_calls'].values()] == ['close_stale']
+        inner = next(iter(part.metadata['tool_returns'].values()))
+        assert inner.metadata['script_tool'] == 'close_stale'
+        assert [c.tool_name for c in inner.metadata['tool_calls'].values()] == [
+            'list_issues',
+            'close_issue',
+            'close_issue',
+        ]
