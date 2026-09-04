@@ -32,6 +32,7 @@ from pydantic_ai_scriptmode import (
     RUN_SCRIPT_TOOL_NAME,
     InMemoryRecordStore,
     Limits,
+    Record,
     ScriptMode,
     ScriptModeToolset,
     ScriptTool,
@@ -756,6 +757,18 @@ def native_script_tools(ctx: RunContext[None], td: ToolDefinition) -> bool:
     return td.name not in ('close_stale', 'close_missing')
 
 
+class SpyStore(InMemoryRecordStore):
+    """The in-memory store, remembering every record it was handed."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.puts: list[tuple[str, Record]] = []
+
+    async def put(self, key: str, record: Record) -> None:
+        self.puts.append((key, record))
+        await super().put(key, record)
+
+
 class TestScriptTools:
     async def test_a_script_tool_is_folded_into_the_catalog_by_default(self):
         agent, _ = build_agent(scripts=[CLOSE_STALE])
@@ -841,6 +854,22 @@ class TestScriptTools:
             .startswith('`close_missing` failed at step `r`: invalid arguments for `close_issue`')
         )
         assert result.output == "{'closed': 2}"
+
+    async def test_a_completed_script_tool_call_writes_no_record_and_a_failed_one_does(self):
+        store = SpyStore()
+        agent, _ = build_agent(
+            ToolCallPart('close_stale', {'repo': 'api'}),
+            scripts=[CLOSE_STALE],
+            tools=not_close_stale,
+            record_store=store,
+        )
+        await agent.run('go')
+        assert store.puts == []  # a completed record is never read back (ADR 0005), so it is not written
+        failing = SpyStore()
+        script = "try:\n    r = await close_stale(repo='api')\nexcept Exception as e:\n    r = e\nreturn r"
+        agent, _ = build_agent(script, scripts=[CLOSE_STALE], record_store=failing, limits=Limits(max_result_bytes=1))
+        await agent.run('go')
+        assert [(key.count('/'), record.status) for key, record in failing.puts] == [(2, 'error'), (0, 'done')]
 
     async def test_a_script_catches_a_script_tool_failure(self):
         script = "try:\n    r = await close_stale(repo='api')\nexcept Exception as e:\n    r = e\nreturn r"

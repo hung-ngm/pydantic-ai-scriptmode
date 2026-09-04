@@ -556,6 +556,7 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
         record = await self.record_store.get(key) if key is not None else None
         if script_tool is not None and record is not None and record.status in ('done', 'returned'):
             record = None
+        fresh_script_tool = script_tool is not None and record is None
         # The approved re-run resumes from the record, not from `ctx.tool_call_metadata`: Pydantic AI
         # echoes metadata back only when the caller copies it into `DeferredToolResults`.
         resolutions: dict[str, Any] = {}
@@ -573,7 +574,10 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
         outcome = await execute_plan(
             plan, dispatch=dispatch, limits=self.limits, record=record, input=input, resolutions=resolutions
         )
-        if key is not None:
+        # A script tool that completed from nothing is never read back (above), so its record is not
+        # written: a durable store would pay a transaction and keep a row for it (found in review). A
+        # failed or parked one is, and so is a record that already existed, which the new outcome replaces.
+        if key is not None and not (fresh_script_tool and outcome.status in ('done', 'returned')):
             await self.record_store.put(key, outcome.record)
         if outcome.status == 'suspended':
             if key is None:
