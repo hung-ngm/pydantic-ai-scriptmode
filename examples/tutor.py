@@ -213,13 +213,21 @@ class Stats:
 
 
 def nested_calls(metadata: Any) -> int:
-    """Calls a script made, counting through script tools it called."""
+    """Tool calls a script made. A script tool it called counts as the calls inside it, not as one more."""
     if not isinstance(metadata, dict) or 'tool_calls' not in metadata:
         return 0
     data = cast(dict[str, Any], metadata)
     calls = cast(dict[str, ToolCallPart], data['tool_calls'])
     returns = cast(dict[str, ToolReturnPart], data.get('tool_returns', {}))
-    return len(calls) + sum(nested_calls(r.metadata) for r in returns.values())
+    return sum(1 if returns.get(call_id) is None else calls_behind(returns[call_id]) for call_id in calls)
+
+
+def calls_behind(part: ToolReturnPart) -> int:
+    """One for a plain tool; for a script tool, the calls its saved script made."""
+    metadata: Any = part.metadata
+    if isinstance(metadata, dict) and cast(dict[str, Any], metadata).get('script_tool'):
+        return nested_calls(metadata)
+    return 1
 
 
 def show(messages: list[ModelMessage], usage: RunUsage) -> Stats:
@@ -231,10 +239,10 @@ def show(messages: list[ModelMessage], usage: RunUsage) -> Stats:
                 if isinstance(p, ToolCallPart) and p.tool_name == RUN_SCRIPT_TOOL_NAME:
                     scripts += 1
                     print(f'--- script {scripts}\n{p.args_as_dict()["script"]}')
+                elif isinstance(p, ToolCallPart) and p.tool_name == WEAK_TOPICS.name:
+                    print(f'--- native script tool call: {p.tool_name} {p.args_as_dict()}')  # counted by its return
                 elif isinstance(p, ToolCallPart):
                     tool_calls += 1
-                    if p.tool_name == WEAK_TOPICS.name:
-                        print(f'--- native script tool call: {p.tool_name} {p.args_as_dict()}')
         else:
             for p in m.parts:
                 if isinstance(p, RetryPromptPart):
