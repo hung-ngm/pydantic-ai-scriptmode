@@ -939,3 +939,83 @@ class TestScriptToolSuspension:
         )
         assert resumed.output == "{'status': 'done', 'output': [1, 2]}"
         assert seen == [(1, False), (2, False), (2, True)]
+
+
+def hyphen_toolset(*names: str) -> FunctionToolset[None]:
+    """A toolset of typed tools under the given names, some of which may sanitize to the same identifier."""
+    toolset: FunctionToolset[None] = FunctionToolset()
+    for name in names:
+
+        def fn(k: int) -> int:
+            return k
+
+        toolset.add_function(fn, name=name)
+    return toolset
+
+
+class TestFoldSemantics:
+    async def test_a_native_tool_does_not_hide_a_folded_tool_with_the_same_sanitized_name(self):
+        agent = Agent(
+            TestModel(call_tools=[]),
+            deps_type=type(None),
+            toolsets=[hyphen_toolset('foo-bar', 'foo_bar')],
+            capabilities=[ScriptMode[None](tools=['foo_bar'])],
+        )
+        model = TestModel(call_tools=[])
+        await agent.run('go', model=model)
+        assert model.last_model_request_parameters is not None
+        defs = {d.name: d for d in model.last_model_request_parameters.function_tools}
+        assert set(defs) == {'foo-bar', RUN_SCRIPT_TOOL_NAME}
+        assert 'async def foo_bar(*, k: int) -> int' in (defs[RUN_SCRIPT_TOOL_NAME].description or '')
+
+    async def test_fold_checks_do_not_fire_for_tools_the_selector_keeps_native(self):
+        toolset: FunctionToolset[None] = FunctionToolset()
+
+        def thing(k: Any) -> Any:
+            return k
+
+        def run_script(script: str) -> str:
+            return script
+
+        toolset.add_function(thing, name='thing')
+        toolset.add_function(run_script, name='run-script')
+        agent = Agent(
+            TestModel(call_tools=[]),
+            deps_type=type(None),
+            toolsets=[toolset],
+            capabilities=[ScriptMode[None](tools=[])],
+        )
+        # No return-schema warning (warnings are errors in this suite) and no reserved-name error.
+        model = TestModel(call_tools=[])
+        await agent.run('go', model=model)
+        assert model.last_model_request_parameters is not None
+        assert sorted(d.name for d in model.last_model_request_parameters.function_tools) == [
+            'run-script',
+            RUN_SCRIPT_TOOL_NAME,
+            'thing',
+        ]
+
+    async def test_a_script_tool_may_not_take_a_wrapped_tools_sanitized_name(self):
+        tool = ScriptTool('foo_bar', '# Nothing\nx = await foo_bar(k=1)', returns=int)
+        agent = Agent(
+            TestModel(call_tools=[]),
+            deps_type=type(None),
+            toolsets=[hyphen_toolset('foo-bar')],
+            capabilities=[ScriptMode[None](scripts=[tool])],
+        )
+        with pytest.raises(UserError, match=r"'foo_bar'.*'foo-bar'"):
+            await agent.run('go')
+
+    async def test_a_saved_script_calling_an_ambiguous_name_is_a_user_error(self):
+        tool = ScriptTool('twice', '# Twice\nx = await foo_bar(k=1)\nreturn x', returns=int)
+        agent = Agent(
+            TestModel(call_tools=[]),
+            deps_type=type(None),
+            toolsets=[hyphen_toolset('foo-bar', 'foo_bar')],
+            capabilities=[ScriptMode[None](scripts=[tool])],
+        )
+        with (
+            pytest.warns(UserWarning, match='collides'),
+            pytest.raises(UserError, match=r"(?s)'twice'.*`foo_bar`.*'foo-bar'.*'foo_bar'"),
+        ):
+            await agent.run('go')

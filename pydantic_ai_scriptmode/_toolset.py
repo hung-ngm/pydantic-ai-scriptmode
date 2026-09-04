@@ -312,20 +312,17 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
             else:
                 eligible[name] = tool
 
-        # Every eligible tool is rendered once; the selector then decides which the model's scripts may
-        # call. A saved script may call any eligible tool: the selector is the model's view, not the
-        # developer's.
-        eligible_defs, sanitized_to_original = self._fold(eligible)
-        folded: set[str] = set()
+        folded: dict[str, ToolsetTool[AgentDepsT]] = {}
         for name, tool in eligible.items():
             if await matches_tool_selector(self.tool_selector, ctx, tool.tool_def):
-                folded.add(name)
+                folded[name] = tool
             else:
                 native[name] = tool
-        callable_defs = {
-            safe: td for safe, td in eligible_defs.items() if sanitized_to_original.get(safe, safe) in folded
-        }
-        self._catalog_scripts(script_tools, wrapped_tools, eligible_defs, sanitized_to_original)
+        callable_defs, sanitized_to_original, _ = self._fold(folded)
+        # A saved script may call any eligible tool: the selector is the model's view, not the
+        # developer's. This fold is quiet; the folded one above carries the warnings.
+        eligible_defs, eligible_sanitized, ambiguous = self._fold(eligible, quiet=True)
+        self._catalog_scripts(script_tools, wrapped_tools, eligible_defs, eligible_sanitized, ambiguous)
         if self.dynamic_catalog:
             description = self._static_description() + '\n\n' + _CATALOG_IN_INSTRUCTIONS
             self._last_catalog = _catalog(callable_defs)
@@ -358,6 +355,7 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
         wrapped_tools: dict[str, ToolsetTool[AgentDepsT]],
         eligible_defs: dict[str, ToolDefinition],
         sanitized_to_original: dict[str, str],
+        ambiguous: dict[str, tuple[str, str]],
     ) -> None:
         """Give each script tool its catalog: every eligible wrapped tool plus the script tools declared before it."""
         wrapped_defs = {
@@ -366,6 +364,13 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
         wrapped_sanitized = {safe: name for safe, name in sanitized_to_original.items() if name not in script_tools}
         earlier: dict[str, _ScriptToolsetTool[AgentDepsT]] = {}
         for name, tool in script_tools.items():
+            for step in tool.script.plan.steps:
+                if isinstance(step, CallStep) and step.tool in ambiguous:
+                    first, second = ambiguous[step.tool]
+                    raise UserError(
+                        f"Script tool '{name}' calls `{step.tool}`, which is ambiguous: tools '{first}' and "
+                        f"'{second}' both sanitize to it. Rename one of them."
+                    )
             tool.callable_defs = {**wrapped_defs, **{n: t.tool_def for n, t in earlier.items()}}
             tool.sanitized_to_original = wrapped_sanitized
             tool.tools = {**wrapped_tools, **earlier}
@@ -386,11 +391,18 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
     ) -> dict[str, _ScriptToolsetTool[AgentDepsT]]:
         """One toolset tool per saved script, each validated against the fold and the scripts before it."""
         script_tools: dict[str, _ScriptToolsetTool[AgentDepsT]] = {}
+        sanitized_wrapped = {sanitize_tool_name(name): name for name in wrapped_tools}
         for script in self.scripts:
             if script.name == RUN_SCRIPT_TOOL_NAME:
                 raise UserError(f"Script tool name '{RUN_SCRIPT_TOOL_NAME}' is reserved for script mode. Rename it.")
-            if script.name in wrapped_tools or script.name in script_tools:
-                raise UserError(f"Script tool '{script.name}' has the same name as another tool. Rename one of them.")
+            if script.name in script_tools:
+                raise UserError(f"Script tool '{script.name}' is declared twice. Rename one of them.")
+            if script.name in sanitized_wrapped:
+                other = sanitized_wrapped[script.name]
+                raise UserError(
+                    f"Script tool '{script.name}' has the same name as tool '{other}' as a script calls it. "
+                    'Rename one of them.'
+                )
             script_tools[script.name] = _ScriptToolsetTool(
                 toolset=self,
                 tool_def=ToolDefinition(
@@ -538,23 +550,42 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
             raise ApprovalRequired(metadata=_suspension_metadata(plan, outcome, script_tool))
         return outcome
 
-    def _fold(self, tools: dict[str, ToolsetTool[AgentDepsT]]) -> tuple[dict[str, ToolDefinition], dict[str, str]]:
+    def _fold(
+        self, tools: dict[str, ToolsetTool[AgentDepsT]], *, quiet: bool = False
+    ) -> tuple[dict[str, ToolDefinition], dict[str, str], dict[str, tuple[str, str]]]:
+        """Render `tools` under the names a script calls them by.
+
+        Returns the definitions by sanitized name, the sanitized-to-original map, and the collisions.
+        The loud fold (the model's catalog) warns on a collision and keeps the first tool, and treats a
+        name that sanitizes to `run_script` as an error; the quiet fold (what a saved script may call)
+        drops both sides of a collision and reports them, and drops the reserved name silently.
+        """
         callable_defs: dict[str, ToolDefinition] = {}
         sanitized_to_original: dict[str, str] = {}
+        ambiguous: dict[str, tuple[str, str]] = {}
         for name, tool in tools.items():
             td = tool.tool_def
             safe = sanitize_tool_name(name)
             if safe == RUN_SCRIPT_TOOL_NAME:
+                if quiet:
+                    continue
                 raise UserError(f"Tool name '{name}' conflicts with the script mode tool. Rename your tool.")
+            if safe in ambiguous:
+                continue
             if safe in callable_defs:
                 existing = sanitized_to_original.get(safe, safe)
+                if quiet:
+                    ambiguous[safe] = (existing, name)
+                    del callable_defs[safe]
+                    sanitized_to_original.pop(safe, None)
+                    continue
                 warnings.warn(
                     f'ScriptMode: tool {name!r} (sanitized to {safe!r}) collides with {existing!r} and is hidden.',
                     UserWarning,
                     stacklevel=2,
                 )
                 continue
-            if not td.return_schema and name not in self._warned_no_return_schema:
+            if not quiet and not td.return_schema and name not in self._warned_no_return_schema:
                 self._warned_no_return_schema.add(name)
                 warnings.warn(
                     f'ScriptMode: tool {name!r} has no return schema; its signature will show `-> Any`.',
@@ -565,7 +596,7 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
                 sanitized_to_original[safe] = name
                 td = replace(td, name=safe)
             callable_defs[safe] = td
-        return callable_defs, sanitized_to_original
+        return callable_defs, sanitized_to_original, ambiguous
 
     def _static_description(self) -> str:
         return '\n\n'.join([_DESCRIPTION_HEAD, _limits_paragraph(self.limits)])
