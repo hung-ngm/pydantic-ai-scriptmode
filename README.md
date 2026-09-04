@@ -73,7 +73,9 @@ steps, approved, with everything else reused from the record. A parked fan-out k
 and re-dispatches only the parked ones. A denial is answered by Pydantic AI before the toolset sees
 it, so the parked steps stay parked and are asked again if a later script calls them; a step that
 parks more than `max_suspend_attempts` times fails instead, with an error the script's error branch
-can catch. A suspension never counts against `max_retries`.
+can catch. A suspension never counts against `max_retries`. The run that parks and the run that
+resumes must share a record store; the default lives in one process, and `SQLiteRecordStore` (below)
+shares a file across processes.
 
 The catalog of folded tools is rebuilt every step, so a tool discovered mid-run by `ToolSearch` is
 callable from the next script either way. By default the catalog is rendered into the `run_script`
@@ -125,7 +127,8 @@ arguments in a script tool.
   deferred tools, and other code-execution tools always stay native.
 - `limits`: a `Limits` dataclass, below. The live numbers are rendered into the `run_script`
   description.
-- `record_store`: a `RecordStore`, below. Defaults to in-memory.
+- `record_store`: a `RecordStore`, below. Defaults to in-memory; `SQLiteRecordStore(path)` survives the
+  process.
 - `max_retries`: retries for `run_script` itself (default 3). Compile errors, validation errors, and
   uncaught runtime errors all count.
 - `dynamic_catalog`: `False` by default. When `True`, the folded tools' signatures move out of the
@@ -208,6 +211,23 @@ execution. An oversized result or an exhausted suspend budget fails the call, wh
 error branch may catch; a spent expression budget fails the step outright.
 
 ### RecordStore
+
+The default `InMemoryRecordStore` is a dict, so a run that parks in one process cannot resume in
+another. `SQLiteRecordStore(path)` keeps records in one SQLite file through the standard library,
+so the run that parks and the run that resumes need only share the path:
+
+```python
+from pydantic_ai_scriptmode import ScriptMode, SQLiteRecordStore
+
+store = SQLiteRecordStore('records.sqlite')
+agent = Agent(..., capabilities=[ScriptMode(record_store=store)])
+```
+
+`':memory:'` gives a store that lives with the instance, for tests. `put` is last-write-wins and
+there is no `delete`; the table is `records(key, record, updated_at)` with `updated_at` in ISO 8601
+UTC, so a host prunes with `DELETE FROM records WHERE updated_at < ?`. A writer in another process
+is waited for `timeout` seconds (default 5), then `sqlite3.OperationalError` escapes. `close()`
+releases the connection.
 
 A store has two async methods keyed by a string: the conversation id for `run_script`, and the
 conversation id, tool name, and input hash for a script tool. `Record.to_dict()` is a JSON-safe

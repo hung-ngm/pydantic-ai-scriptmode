@@ -564,7 +564,8 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
                 raise UserError(
                     f'{ctx.tool_name} was approved, but there is no record to resume from. The record '
                     'store must be shared by the run that parked and the run that resumes; the default '
-                    'InMemoryRecordStore lives in one process.'
+                    'InMemoryRecordStore lives in one process. Use SQLiteRecordStore(path) to resume '
+                    'across processes.'
                 )
             # Only what the approver was shown: the steps the parking run surfaced, not every parked
             # entry the record still holds (a step parked by a denied script stays parked and is asked again).

@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 ---
 
 # A record survives the process: the package serializes it and ships a SQLite store
