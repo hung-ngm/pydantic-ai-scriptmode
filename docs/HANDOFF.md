@@ -21,6 +21,7 @@ starts with an ADR (see "Next session").
 | 2. Suspend and detach | 0004 | `3a0fc05` to `3ee811f` | 2026-09-03 |
 | 3. Script tools | 0005 | `ef394a3` to `23d2b06` | 2026-09-04 |
 | 4. Durable `RecordStore` | 0006 | `879088f` to `5c51cf7` | 2026-09-04 |
+| Tutor harness: Logfire instrumentation (the user's) | (none) | one commit after `2e1b557` | 2026-09-04 |
 
 `git log` has every commit with a one-line message that says what behaviour it added; this file
 does not repeat them.
@@ -29,15 +30,12 @@ Remote: `origin` is the private repo `https://github.com/hung-ngm/pydantic-ai-sc
 `main` tracks `origin/main` and is in sync. Commit straight to `main` and push after each commit;
 no force-push, no other branches.
 
-Uncommitted, the user's own work in progress (do not touch, do not commit): Logfire instrumentation
-of `examples/tutor.py` (`logfire.configure`, `instrument_pydantic_ai`, four metrics per run) with
-`logfire>=4.41.0` added to the `examples` group in `pyproject.toml` and `uv.lock`. That working copy
-is behind `HEAD` (it lacks `weak_topics`, the `SCRIPTMODE_NATIVE_SCRIPTS` switch, and
-`nested_calls`); to carry the Logfire hunks onto HEAD: `git diff 1e91d06 -- examples/tutor.py >
-/tmp/logfire.patch && git checkout examples/tutor.py && git apply --3way /tmp/logfire.patch`. One
-review finding is for the user, not this package: `logfire.configure()` runs at import with
-`send_to_logfire` defaulting to `True`, so a clone without `logfire auth` or a token raises or
-prompts before `main()`; `send_to_logfire='if-token-present'` (and `console=False`) would fix it.
+Nothing is uncommitted. The user's Logfire instrumentation of `examples/tutor.py` (four metrics per
+run, `logfire>=4.41.0` in the `examples` group) was carried onto HEAD and committed on 2026-09-04.
+One review finding about it is still open and is the user's call: `logfire.configure()` runs at
+import with `send_to_logfire` defaulting to `True`, so a clone without `logfire auth` or a token
+raises or prompts before `main()`; `send_to_logfire='if-token-present'` (and `console=False` to keep
+the printed trace clean) would fix it.
 
 Read these first, in order. Do not restate them here.
 
@@ -292,11 +290,8 @@ calls from the `run_script` return's metadata, so a parked run's pre-park calls 
 
 ## Next session: start here
 
-1. `cd pydantic-ai-scriptmode && git pull && uv sync --all-groups && make all`. Expect 231 passed.
-   `git status` will show the user's uncommitted Logfire work (see above); leave it. To commit a
-   change to `examples/tutor.py` without those hunks, apply the change to a copy of
-   `git show HEAD:examples/tutor.py`, `git hash-object -w` the copy, and
-   `git update-index --cacheinfo 100644,<sha>,examples/tutor.py`.
+1. `cd pydantic-ai-scriptmode && git pull && uv sync --all-groups && make all`. Expect 231 passed
+   and a clean `git status`.
 2. Process rules: an ADR before any backlog item (`docs/adr/000N-<slug>.md`, `status: proposed`,
    in the voice of `0002`: one paragraph of decision, one of cost, then the rejected options),
    grilled before the user's yes, then `mattpocock-skills:tdd` one commit per behaviour. Gate every
