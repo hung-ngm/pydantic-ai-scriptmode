@@ -27,3 +27,15 @@ class TestRecordRoundTrip:
         data['revision'] = 3
         with pytest.raises(TypeError, match='revision'):
             Record.from_dict(data)
+
+    def test_from_dict_refuses_a_missing_key(self, parked_script_tool_record: Record):
+        data = parked_script_tool_record.to_dict()
+        del data['parked']
+        with pytest.raises(TypeError, match='parked'):
+            Record.from_dict(data)
+
+    def test_from_dict_refuses_a_missing_key_inside_a_step(self, parked_script_tool_record: Record):
+        data = parked_script_tool_record.to_dict()
+        del data['steps']['scores']['items'][0]['value']
+        with pytest.raises(TypeError, match='value'):
+            Record.from_dict(data)

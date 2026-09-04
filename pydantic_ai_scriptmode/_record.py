@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal, Protocol
 
 from pydantic_core import to_jsonable_python
@@ -28,8 +28,8 @@ class ItemRecord:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ItemRecord:
-        """Rebuild an item from `to_dict`'s object; an unknown key is a `TypeError`."""
-        return cls(**data)
+        """Rebuild an item from `Record.to_dict`'s object; a missing or unknown key is a `TypeError`."""
+        return cls(**_exact(cls, data))
 
 
 @dataclass
@@ -49,9 +49,9 @@ class StepRecord:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> StepRecord:
-        """Rebuild a step record from `to_dict`'s object; an unknown key is a `TypeError`."""
-        rest = dict(data)
-        items = rest.pop('items', None)
+        """Rebuild a step record from `Record.to_dict`'s object; a missing or unknown key is a `TypeError`."""
+        rest = _exact(cls, data)
+        items = rest.pop('items')
         return cls(**rest, items=None if items is None else [ItemRecord.from_dict(item) for item in items])
 
 
@@ -83,12 +83,25 @@ class Record:
     def from_dict(cls, data: dict[str, Any]) -> Record:
         """Rebuild a record from `to_dict`'s object.
 
-        Strict: an unknown key is a `TypeError`, since the package wrote the object and a dropped
-        field would be a silent wrong resume.
+        Strict: a missing or unknown key is a `TypeError`, since the package wrote the object and a
+        dropped field would be a silent wrong resume (every field has a default, so `cls(**data)`
+        alone would not notice).
         """
-        rest = dict(data)
-        steps = rest.pop('steps', {})
+        rest = _exact(cls, data)
+        steps = rest.pop('steps')
         return cls(**rest, steps={name: StepRecord.from_dict(entry) for name, entry in steps.items()})
+
+
+def _exact(cls: type, data: dict[str, Any]) -> dict[str, Any]:
+    """A copy of `data` whose keys are exactly `cls`'s fields, or a `TypeError` naming the difference."""
+    expected = {f.name for f in fields(cls)}
+    missing = sorted(expected - data.keys())
+    unknown = sorted(data.keys() - expected)
+    if missing or unknown:
+        parts = [f'missing {", ".join(missing)}'] if missing else []
+        parts += [f'unknown {", ".join(unknown)}'] if unknown else []
+        raise TypeError(f'{cls.__name__}.from_dict: {"; ".join(parts)}')
+    return dict(data)
 
 
 class RecordStore(Protocol):
