@@ -394,7 +394,7 @@ async def execute_plan(
     answer it waited for, handed to `dispatch` as `resolution`.
     """
     limits = limits or Limits()
-    reused = reusable_steps(plan, record)
+    reused = reusable_steps(plan, record, input)
     env: dict[str, Any] = {'input': input}
     env.update({name: entry.value for name, entry in reused.items()})
     prior_attempts = dict(record.suspend_attempts) if record is not None else {}
@@ -404,7 +404,7 @@ async def execute_plan(
         limits=limits,
         env=env,
         settled=dict(reused),
-        carried=parked_steps(plan, record, reused),
+        carried=parked_steps(plan, record, reused, input),
         resolutions=dict(resolutions or {}),
         suspend_attempts=dict(prior_attempts),
     )
@@ -443,5 +443,7 @@ async def execute_plan(
     counted = runner.suspend_attempts if status == 'suspended' else prior_attempts
     attempts = {name: n for name, n in counted.items() if name in steps and steps[name].status == 'suspended'}
     parked = list(dict.fromkeys(name for name, _, _ in suspensions))
-    new_record = Record(steps=steps, status=status, at=at, output=output, suspend_attempts=attempts, parked=parked)
+    new_record = Record(
+        steps=steps, status=status, at=at, output=output, suspend_attempts=attempts, parked=parked, input=input
+    )
     return ExecuteResult(status=status, output=output, record=new_record, at=at, error=error, suspensions=suspensions)

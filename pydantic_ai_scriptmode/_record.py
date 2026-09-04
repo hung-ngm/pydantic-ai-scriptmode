@@ -54,6 +54,8 @@ class Record:
     """Times each step has parked, by name, while it is still parked; cleared when it settles otherwise."""
     parked: list[str] = field(default_factory=list[str])
     """The steps whose suspension the last run surfaced, in plan order; only these may take a resolution."""
+    input: Any = None
+    """The `input` the last run read. A step that reads `input` is reused only under the same one."""
 
 
 class RecordStore(Protocol):
@@ -83,44 +85,49 @@ class InMemoryRecordStore:
         self._records[conversation_id] = record
 
 
-def reusable_steps(plan: Plan, record: Record | None) -> dict[str, StepRecord]:
+def reusable_steps(plan: Plan, record: Record | None, input: Any = None) -> dict[str, StepRecord]:
     """Settled entries of `record` that the plan can take as given instead of running again.
 
     A step is reused when the record holds a settled entry (done or skipped) under the same name
     with the same authored hash, and every step it reads is itself reused. The second condition
     goes beyond callscript, which matches on name and hash alone: an unchanged step whose input
-    changed would otherwise carry a stale value forward. A step that reads `input` is never
-    reused, since `input` is not part of the record.
+    changed would otherwise carry a stale value forward. A step that reads `input` is reused only
+    when `input` equals what the record was produced under (`Record.input`); a script tool's record
+    is keyed by its input, so there it is as stable as any other step (ADR 0005).
     """
     reused: dict[str, StepRecord] = {}
     if record is None:
         return reused
     for step in plan.steps:
         prior = record.steps.get(step.name)
-        if prior is not None and prior.status in ('done', 'skipped') and _same_step(step, prior, reused):
+        if prior is not None and prior.status in ('done', 'skipped') and _same_step(step, prior, reused, record, input):
             reused[step.name] = prior
     return reused
 
 
-def parked_steps(plan: Plan, record: Record | None, reused: dict[str, StepRecord]) -> dict[str, StepRecord]:
+def parked_steps(
+    plan: Plan, record: Record | None, reused: dict[str, StepRecord], input: Any = None
+) -> dict[str, StepRecord]:
     """Suspended entries of `record` the plan re-enters: same name, same hash, every read step in `reused`.
 
     A parked step runs again, with the resolution if one was given, and a parked fan-out
-    re-dispatches only its parked items. `reused` is `reusable_steps(plan, record)`, the same rule
-    for its inputs, so the items it carries were produced from the inputs it will see.
+    re-dispatches only its parked items. `reused` is `reusable_steps(plan, record, input)`, the
+    same rule for its inputs, so the items it carries were produced from the inputs it will see.
     """
     parked: dict[str, StepRecord] = {}
     if record is None:
         return parked
     for step in plan.steps:
         prior = record.steps.get(step.name)
-        if prior is not None and prior.status == 'suspended' and _same_step(step, prior, reused):
+        if prior is not None and prior.status == 'suspended' and _same_step(step, prior, reused, record, input):
             parked[step.name] = prior
     return parked
 
 
-def _same_step(step: Step, prior: StepRecord, reused: dict[str, StepRecord]) -> bool:
+def _same_step(step: Step, prior: StepRecord, reused: dict[str, StepRecord], record: Record, input: Any) -> bool:
     if prior.hash != step_hash(step):
         return False
     references = step.references()
-    return 'input' not in references and all(ref in reused for ref in references)
+    if 'input' in references and record.input != input:
+        return False
+    return all(ref in reused for ref in references if ref != 'input')

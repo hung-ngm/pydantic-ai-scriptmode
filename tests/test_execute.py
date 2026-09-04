@@ -219,8 +219,19 @@ class TestRecordReuse:
                 'z': StepRecord(step_hash(z), 'done', 3),
             }
         )
-        assert set(reusable_steps(plan, record)) == {'x'}
+        # The record was produced under `input=None`; a different input invalidates `y` and its dependents.
+        assert set(reusable_steps(plan, record, input={'n': 1})) == {'x'}
+        assert set(reusable_steps(plan, record)) == {'x', 'y', 'z'}
         assert reusable_steps(plan, None) == {}
+
+    async def test_a_step_reading_input_is_reused_only_under_the_same_input(self):
+        tools = FakeTools(f={'v': 1}, g='ok')
+        first = await run('x = await f(k=1)\ny = await g(k=input.n)', tools, input={'n': 1})
+        assert first.record.input == {'n': 1}
+        same = await run('x = await f(k=1)\ny = await g(k=input.n)', tools, record=first.record, input={'n': 1})
+        assert same.status == 'done' and [c[0] for c in tools.calls] == ['f', 'g']
+        other = await run('x = await f(k=1)\ny = await g(k=input.n)', tools, record=first.record, input={'n': 2})
+        assert other.status == 'done' and [c[0] for c in tools.calls] == ['f', 'g', 'g']
 
 
 class TestSuspend:
