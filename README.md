@@ -271,9 +271,14 @@ invalidate a step.
 `TemporalDurability` the engine runs workflow-side: compiling, validating, and scheduling a plan are
 deterministic, and every folded call goes through the wrapped toolset, so it is an activity and the
 history replays. The record then lives in the workflow: keep the default `InMemoryRecordStore`, since
-replay rebuilds it from the activity results and the history is the durable copy. Do not hand a
-`SQLiteRecordStore` to an agent that runs inside a Temporal workflow; it builds a thread pool, which
-the workflow sandbox refuses at construction. Under `DBOSDurability` the agent runs in the workflow
+replay rebuilds it from the activity results and the history is the durable copy. The store must be
+scoped to the workflow, not shared across workflows on one worker: the default sandbox gives that
+(a module not passed through is imported afresh per workflow run, so a module-level `ScriptMode()`
+holds a fresh store), but a worker-global store with a stable `conversation_id` would let a
+same-worker replay reuse the record, skip the activities, and fail on nondeterminism. If you pass
+`pydantic_ai_scriptmode` through the sandbox, build the `ScriptMode` inside the workflow instead.
+Do not hand a `SQLiteRecordStore` to an agent that runs inside a Temporal workflow; it builds a
+thread pool, which the workflow sandbox refuses at construction. Under `DBOSDurability` the agent runs in the workflow
 function and the model requests are journaled as steps; any store works there.
 `tests/test_temporal.py` and `tests/test_dbos.py` are the composition tests (`make durability`
 installs their group).

@@ -38,8 +38,11 @@ What is built and tested (package `pydantic-ai-scriptmode`, source
 - Script tools: a developer-saved script served as a tool with its own parameter schema and its own
   record.
 - Composition tests under `TemporalDurability` (engine workflow-side, folded calls as activities,
-  clean replay, record reuse across a retry inside one workflow) and `DBOSDurability`.
-- 235 tests, pyright strict, 100% of the grammar table exercised.
+  replay of a run and of a retry that reused a settled step, and the pinned limit: the in-memory
+  record must be workflow-scoped, which the default sandbox gives; a worker-global store with a
+  stable conversation id diverges on replay) and `DBOSDurability`. Making the record's reads and
+  writes durable operations so it rides on the journal is the open design question for a port.
+- 236 tests, pyright strict, every row of the grammar table exercised.
 
 Trial against plain tools, same model (`anthropic:claude-opus-5`), same four tools, one run each,
 not a benchmark:

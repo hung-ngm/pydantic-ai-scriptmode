@@ -57,7 +57,7 @@ durability = [
 ]
 
 [tool.uv]
-# Every sync installs every group, so `uv run` for the example never prunes the linters.
+# Every sync installs every group but `durability`, so `uv run` for the example never prunes the linters.
 default-groups = ['dev', 'lint', 'examples']
 
 [tool.hatch.build.targets.wheel]

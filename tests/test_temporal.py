@@ -28,7 +28,7 @@ try:
         SandboxedWorkflowRunner,
         SandboxRestrictions,
     )
-    from temporalio.workflow import ActivityConfig
+    from temporalio.workflow import ActivityConfig, NondeterminismError
 except ImportError:  # pragma: no cover
     pytest.skip('temporalio not installed', allow_module_level=True)
 
@@ -39,9 +39,10 @@ from pydantic_ai.toolsets.function import FunctionToolset
 
 from pydantic_ai_scriptmode import ScriptMode, SQLiteRecordStore
 
+from . import _shared_store
+
 pytestmark = pytest.mark.anyio
 
-TEMPORAL_PORT = 7245
 TASK_QUEUE = 'pydantic-ai-scriptmode-queue'
 ACTIVITY_CONFIG = ActivityConfig(
     start_to_close_timeout=timedelta(seconds=60),
@@ -52,12 +53,11 @@ FAILING_SCRIPT = '# Add then double\nresult = await add(a=3, b=4)\ndoubled = awa
 CORRECTED_SCRIPT = '# Add then double\nresult = await add(a=3, b=4)\ndoubled = await twice(n=result)\nreturn doubled'
 
 
-def _workflow_runner() -> SandboxedWorkflowRunner:
-    # `pydantic_graph` is registered as a failure exception type by `PydanticAIPlugin` without being
-    # passed through, so the sandbox imports it for real and trips on `opentelemetry.context`'s
-    # `os.environ.get` at import time (pydantic/pydantic-ai#6986).
+def _workflow_runner(*passthrough: str) -> SandboxedWorkflowRunner:
+    # `coverage` imports parser modules lazily while tracing workflow code. `PydanticAIPlugin` adds
+    # `pydantic_ai` and `pydantic_graph` to whatever runner the worker is given.
     return SandboxedWorkflowRunner(
-        restrictions=SandboxRestrictions.default.with_passthrough_modules('coverage', 'pydantic_graph')
+        restrictions=SandboxRestrictions.default.with_passthrough_modules('coverage', *passthrough)
     )
 
 
@@ -68,8 +68,8 @@ def anyio_backend() -> str:
 
 @pytest.fixture(scope='module')
 async def temporal_env() -> AsyncIterator[WorkflowEnvironment]:
+    # An ephemeral port, so two checkouts or an orphaned dev server cannot collide.
     async with await WorkflowEnvironment.start_local(  # pyright: ignore[reportUnknownMemberType]
-        port=TEMPORAL_PORT,
         dev_server_extra_args=['--dynamic-config-value', 'frontend.enableServerVersionCheck=false'],
     ) as env:
         yield env
@@ -77,7 +77,8 @@ async def temporal_env() -> AsyncIterator[WorkflowEnvironment]:
 
 @pytest.fixture
 async def client(temporal_env: WorkflowEnvironment) -> Client:
-    return await Client.connect(f'localhost:{TEMPORAL_PORT}', plugins=[PydanticAIPlugin()])
+    target = temporal_env.client.service_client.config.target_host
+    return await Client.connect(target, plugins=[PydanticAIPlugin()])
 
 
 def add(a: int, b: int) -> int:
@@ -140,6 +141,16 @@ retrying_agent = Agent(
     capabilities=[ScriptMode(), TemporalDurability(activity_config=ACTIVITY_CONFIG)],
 )
 
+shared_store_agent = Agent(
+    FunctionModel(_retrying_model),
+    name='script_mode_shared_store_agent',
+    toolsets=[FunctionToolset(tools=[add, twice, boom], id='math')],
+    capabilities=[
+        ScriptMode(record_store=_shared_store.STORE),
+        TemporalDurability(activity_config=ACTIVITY_CONFIG),
+    ],
+)
+
 
 @workflow.defn
 class ScriptModeWorkflow:
@@ -147,6 +158,16 @@ class ScriptModeWorkflow:
     async def run(self, prompt: str) -> dict[str, Any]:
         result = await script_agent.run(prompt)
         return {'output': str(result.output), 'messages': result.all_messages_json().decode()}
+
+
+@workflow.defn
+class StableConversationWorkflow:
+    """A worker-global store and a conversation id the caller chooses, so a replay finds the record."""
+
+    @workflow.run
+    async def run(self, prompt: str) -> dict[str, Any]:
+        result = await shared_store_agent.run(prompt, conversation_id='conversation-1')
+        return {'output': str(result.output)}
 
 
 @workflow.defn
@@ -279,3 +300,36 @@ async def test_sqlite_store_is_refused_workflow_side(client: Client) -> None:
             execution_timeout=timedelta(seconds=30),
         )
     assert refused == 'concurrent.futures.ThreadPoolExecutor.__call__'
+
+
+async def test_worker_global_store_diverges_on_replay(client: Client) -> None:
+    """Pins the README's condition: the in-memory record must be workflow-scoped.
+
+    The store lives in `tests/_shared_store.py`, passed through the sandbox, so it is worker-global.
+    An in-process replay of an execution that used a stable conversation id finds the record the
+    execution left, reuses the settled steps, schedules no activity, and Temporal reports the
+    divergence. The default sandbox re-imports this module per execution, so the other tests replay.
+    """
+    runner = _workflow_runner('tests._shared_store')
+    workflow_id = 'scriptmode_temporal_stable_conversation'
+    async with Worker(
+        client,
+        task_queue=TASK_QUEUE,
+        workflows=[StableConversationWorkflow],
+        plugins=[AgentPlugin(shared_store_agent)],
+        workflow_runner=runner,
+    ):
+        result = await client.execute_workflow(
+            StableConversationWorkflow.run,
+            args=['Add then double'],
+            id=workflow_id,
+            task_queue=TASK_QUEUE,
+            execution_timeout=timedelta(seconds=30),
+        )
+    assert result['output'] == 'done: 14'
+
+    history = await client.get_workflow_handle(workflow_id).fetch_history()
+    replay = await Replayer(
+        workflows=[StableConversationWorkflow], plugins=[PydanticAIPlugin()], workflow_runner=runner
+    ).replay_workflow(history, raise_on_replay_failure=False)
+    assert isinstance(replay.replay_failure, NondeterminismError)

@@ -26,7 +26,8 @@ testcov:
 	uv run coverage run -m pytest
 	uv run coverage report
 
-# The durability tests need the `durability` group; they skip when it is not installed.
+# The durability tests need the `durability` group; they skip when it is not installed. `uv run
+# --group` adds it to the venv and later `uv run`s keep it, so `make all` runs them too until `uv sync`.
 durability:
 	uv run --group durability pytest tests/test_temporal.py tests/test_dbos.py
 

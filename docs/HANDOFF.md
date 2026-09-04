@@ -11,9 +11,15 @@ session; do not write handoff copies elsewhere (no temp-directory copies, no pro
 Backlog items 0 to 4 are done: each has an accepted ADR, was built by TDD one commit per behaviour,
 reviewed with `code-review` at `medium`, and pushed. Item 5, a JS surface, is closed without code by
 ADR 0007 (accepted 2026-09-04): the reasons and the build plan are in the ADR, and the reopening
-condition is a model that cannot write the Python subset after the teaching copy. `make all` (ruff
-format, ruff check, pyright strict, pytest) is green: 231 passed, no xfails, no skips. The next
-item is 6, upstreaming to `pydantic-ai-harness`, which starts with an ADR (see "Next session").
+condition is a model that cannot write the Python subset after the teaching copy. Item 6,
+upstreaming to `pydantic-ai-harness`, has its ADR (0008, accepted 2026-09-04) and the part of it
+that can be done before asking: the Temporal and DBOS composition tests the harness requires pass,
+and the capability-request issue is drafted in `docs/upstream/issue.md`. The engine changed once for
+it: `Runner.schedule` wakes on an `asyncio.Event` instead of `asyncio.wait`, which Temporal's
+workflow sandbox warns is non-deterministic (this suite errors on warnings). What is left is the user's: post the issue, publish 0.1.0 to PyPI, and
+wait for a maintainer's answer before any port (see "Next session"). `make all` (ruff format, ruff
+check, pyright strict, pytest) is green: 236 passed with the `durability` group installed; without
+it, 231 passed and the two durability modules skipped at module level (the only skips), no xfails.
 
 | Item | ADR | Commits on `main` | Done |
 | --- | --- | --- | --- |
@@ -24,7 +30,8 @@ item is 6, upstreaming to `pydantic-ai-harness`, which starts with an ADR (see "
 | 3. Script tools | 0005 | `ef394a3` to `23d2b06` | 2026-09-04 |
 | 4. Durable `RecordStore` | 0006 | `879088f` to `5c51cf7` | 2026-09-04 |
 | Tutor harness: Logfire instrumentation (the user's) | (none) | `caa6567`, `005dd57` | 2026-09-04 |
-| 5. JS surface: closed, no code | 0007 | one commit after `005dd57` | 2026-09-04 |
+| 5. JS surface: closed, no code | 0007 | `6320b90` | 2026-09-04 |
+| 6. Upstreaming: ADR, durability tests, issue draft | 0008 | `1274745` to `a7cee38` | 2026-09-04, waiting on the user and the maintainers |
 
 `git log` has every commit with a one-line message that says what behaviour it added; this file
 does not repeat them.
@@ -44,10 +51,12 @@ Read these first, in order. Do not restate them here.
 
 - `README.md`: usage, "How it works", grammar table, options, retry messages, `RecordStore`.
 - `CONTEXT.md`: glossary (19 terms). Use these words in code, docs, tests, and this file.
-- `docs/adr/0001-*.md` to `0007-*.md`: why inert plan, why Python surface, why the catalog can
+- `docs/adr/0001-*.md` to `0008-*.md`: why inert plan, why Python surface, why the catalog can
   move into instructions, why a parked call resumes from the record, why a saved script is a tool
   served by the toolset, why the package serializes the record and ships a SQLite store, why there
-  is no JS surface. Each ends with the options it rejected; do not re-litigate them without new facts.
+  is no JS surface, why upstreaming goes issue first and vendored. Each ends with the options it
+  rejected; do not re-litigate them without new facts.
+- `docs/upstream/issue.md`: the capability-request draft for the harness, in its template's fields.
 - Project memory `~/.claude/projects/-Users-hungng-Documents-AI-experiments-pydantic-experiments/memory/scriptmode-project.md`
   (loaded automatically via `MEMORY.md`).
 
@@ -69,6 +78,7 @@ what it owns.
 | `_execute.py` | `Runner` (with `schedule`), `execute_plan`, `CallError`, `Suspend`, `Dispatch` | `tests/test_execute.py` |
 | `_toolset.py` | `ScriptModeToolset(WrapperToolset)`, `run_script` description, catalog stash and `get_instructions`, dispatch, script tools served and run (`_ScriptToolsetTool`, `_call_script_tool`, `_run`) | `tests/test_script_mode.py` |
 | `_capability.py` | `ScriptMode(AbstractCapability)`, discovery announcements | `tests/test_script_mode.py` |
+| (composition) | `ScriptMode` under `TemporalDurability` and `DBOSDurability` | `tests/test_temporal.py`, `tests/test_dbos.py` (skip without the `durability` group); `tests/_shared_store.py` is the worker-global store one test passes through the sandbox |
 
 Public surface is `pydantic_ai_scriptmode/__init__.py` (`__all__`).
 
@@ -120,8 +130,13 @@ anything else there is safe to delete.
   schema" warning checks falsiness.
 - The record is saved even when the run fails, so a retry reuses settled steps. The retry message
   names them.
-- `Runner.schedule` is event-driven: in-flight steps are tasks keyed by name, `asyncio.wait`
-  with `FIRST_COMPLETED` wakes on any settlement and launches what became ready. A halt gates new
+- `Runner.schedule` is event-driven: in-flight steps are tasks keyed by name, one `asyncio.Event`
+  (`woken`) set by every task's done callback wakes the loop on any settlement, and the settled tasks are
+  read in launch order (dict order) and what became ready is launched. It was `asyncio.wait` with
+  `FIRST_COMPLETED` until item 6: Temporal's workflow sandbox warns on `asyncio.wait` (its `done`
+  set iterates in no fixed order; `UserWarning`, not a refusal, so under this suite's
+  `filterwarnings = ['error']` it failed the workflow task, which Temporal retried forever, the
+  hang below) and the engine runs workflow-side there. A halt gates new
   launches only, so in-flight steps settle and the record holds what their tools did. When
   `run_step` raises a `finally` cancels and awaits the remaining tasks so none outlives the run.
   Settled in review: only a `UserError` (unresolved deferral) or a bug can raise there, so the
@@ -177,6 +192,33 @@ anything else there is safe to delete.
 - `_run` skips the `put` for a script tool that completed from no record (`fresh_script_tool`),
   since the next call discards a completed record anyway; a failed, parked, or pre-existing record
   is still written. `SpyStore` in `tests/test_script_mode.py` pins it.
+- Durability (item 6). Under `TemporalDurability` the `ScriptModeToolset` wraps the durable
+  toolset (`outermost` ordering), so compile, validate, and schedule run in the workflow and every
+  folded call is the wrapped toolset's activity (`agent__<name>__toolset__<id>__call_tool`); the
+  history replays and a corrected script re-dispatches only the unsettled step
+  (`tests/test_temporal.py`). The default in-memory record is rebuilt by replay, so it is the right
+  store there, as long as it is workflow-scoped: the sandbox re-imports a module it does not pass
+  through per workflow run, so a module-level `ScriptMode()` is fresh per run; a worker-global
+  store plus a stable `conversation_id` would let a same-worker replay reuse the record and skip
+  activities. Reproduced and pinned: `test_worker_global_store_diverges_on_replay` holds the store
+  in `tests/_shared_store.py`, passed through the sandbox, and the in-process replay is a
+  `NondeterminismError` (the default sandbox, two executions with the same conversation id on one
+  worker, replayed cleanly). The README says to keep the store workflow-scoped. The engine-level
+  answer, for the port, is to make the store's `get` and `put` durable operations
+  (`@durable_operation` on the capability, `pydantic_ai.durable_exec`), so the journal carries the
+  record across replays and workers; that is the "record on history" question ADR 0008 predicted
+  and it is not decided yet (found in review); `SQLiteRecordStore` builds a thread pool, which the sandbox refuses at construction
+  (pinned in `tests/test_temporal.py`), and the README says so. Under `DBOSDurability` the agent
+  runs in the workflow function, `run_sync` works, and the model requests are the journaled steps
+  (`tests/test_dbos.py`). Test facts: a DBOS app name is at most 30 characters; `run_sync` inside a
+  DBOS workflow trips a `DeprecationWarning` from `pydantic_graph`'s `get_event_loop`, filtered per
+  module since the suite errors on warnings; the Temporal dev server starts with
+  `pydantic_graph` and `coverage` passed through the sandbox, on an ephemeral port (the client
+  fixture connects to `temporal_env`'s address); a workflow that hangs is a workflow task failing
+  and being retried forever, so every `execute_workflow` carries `execution_timeout=30s` and the
+  failure is read with `-o log_cli=true -o log_cli_level=WARNING`. `uv run --group durability`
+  adds the group to the shared venv and `uv run` never prunes, so after `make durability` a plain
+  `make all` runs the durability tests too until the next `uv sync`.
 - Suspension (ADR 0004). A parked step is in `settled` with status `suspended` but `Runner.bound`
   says it binds nothing, so its dependents and any guard after it never become ready; `schedule`
   returns instead of raising `PlanExecutionError` when pending steps remain and something is parked.
@@ -257,6 +299,9 @@ calls from the `run_script` return's metadata, so a parked run's pre-park calls 
   request's metadata and every step's value is in the record; the README says so. Nested call ids
   restart at `__1` on the resumed run; the parking run's ids never reached history, so nothing
   collides.
+- Under Temporal a worker-global record store plus a stable `conversation_id` diverges on replay
+  (pinned, see "Durability" above); the default sandbox scopes a module-level store per execution.
+  Whether the store should become a durable operation is decided at the port, not here.
 - Two dependent approval-gated calls take two approval rounds: the second cannot start until the
   first resolves, so it parks on the resumed run. By design (a fence is a fence).
 - A parked entry for a step no longer in any plan stays `suspended` in the record, with its count,
@@ -293,8 +338,9 @@ calls from the `run_script` return's metadata, so a parked run's pre-park calls 
 
 ## Next session: start here
 
-1. `cd pydantic-ai-scriptmode && git pull && uv sync --all-groups && make all`. Expect 231 passed
-   and a clean `git status`.
+1. `cd pydantic-ai-scriptmode && git pull && uv sync --all-groups && make all`. Expect 236 passed
+   (231 passed and 2 skipped without the `durability` group; `make durability` installs it) and a
+   clean `git status`.
 2. Process rules: an ADR before any backlog item (`docs/adr/000N-<slug>.md`, `status: proposed`,
    in the voice of `0002`: one paragraph of decision, one of cost, then the rejected options),
    grilled before the user's yes, then `mattpocock-skills:tdd` one commit per behaviour. Gate every
@@ -303,16 +349,45 @@ calls from the `run_script` return's metadata, so a parked run's pre-park calls 
    `CONTEXT.md` and add any new term with an "Avoid" line. Run `code-review` at `medium` before
    the handoff; if it hits the session limit, retry once, then verify its candidate list by hand.
    Update this file in place at the end.
-3. Backlog item 6, upstreaming to `pydantic-ai-harness`. See the plan below.
+3. Item 6 is waiting on two actions that are the user's, in this order, and then on the
+   maintainers. Ask whether they happened before doing anything else.
+   - Publish 0.1.0 to PyPI: `uv build && uv publish` with a PyPI token the user holds; the name
+     `pydantic-ai-scriptmode` was free on 2026-09-04 and `[project.urls]` is set. If the user
+     would rather not, delete the `pip install` line from the issue draft.
+   - Post `docs/upstream/issue.md` through the harness `Capability Request` template
+     (<https://github.com/pydantic/pydantic-ai-harness/issues/new/choose>), one heading per field.
+     Record the issue number here.
+4. Until a maintainer answers, there is no port to do (ADR 0008). Things worth a session while
+   waiting: the open Logfire finding in `examples/tutor.py` (above); a second trial run of the
+   tutor tasks with the `Event` scheduler to confirm the comparison table still holds (the change
+   is behaviour-preserving by the 33 engine tests, but the table is from the old loop); a Temporal
+   test whose script fans out past `max_concurrency` and replays, since the two replaying tests run
+   one activity at a time (review finding, not done); and the durable-operation store above, which
+   needs an ADR amendment before code.
 
-### Plan for item 6: upstreaming to `pydantic-ai-harness` (next)
+### Plan for the port, when a maintainer says yes
 
-Goal: the capability lands in the harness following `agent_docs/capability-authoring.md` there. The
-capability already mirrors harness `CodeMode` conventions (`dynamic_catalog`, announcement,
-`for_run` isolation), so the port is mostly packaging. The ADR (`docs/adr/0008-*.md`) must decide
-whether the engine ships inside the harness or stays a dependency of it, and what the harness
-capability is named next to `CodeMode`. Read the harness `AGENTS.md`, `agent_docs/capability-
-authoring.md`, and `pydantic_ai_harness/code_mode/` first; grill the ADR before the user's yes.
+Everything below is decided in ADR 0008; the harness rules are in its `AGENTS.md`,
+`agent_docs/capability-authoring.md`, `agent_docs/review-checklist.md`, and `agent_docs/docs-
+conventions.md`. Fork `pydantic/pydantic-ai-harness` under the user's account, one branch, one PR
+that links the issue.
+
+- `pydantic_ai_harness/script_mode/`: `__init__.py` exporting `ScriptMode`, `ScriptTool`,
+  `RecordStore`, `InMemoryRecordStore`, `SQLiteRecordStore`, `Limits`; `_capability.py` and
+  `_toolset.py` as here; the engine modules as private siblings with imports rewritten. No
+  dependency change, no extra.
+- Root `pydantic_ai_harness/__init__.py`: `__all__`, the `TYPE_CHECKING` block, and the
+  `__getattr__` dispatch; `tests/test_placeholder.py::test_all_exports_are_importable` enforces it.
+- `pydantic_ai_harness/script_mode/README.md` (purpose-first lead, source link, spaced H1
+  "Script Mode") and `docs/script-mode.md` registered in `tests/test_docs_parity.py::
+  _CAPABILITY_PAGE_META`; the version-promise blockquote copied verbatim from `docs/code-mode.md`;
+  the top-level `README.md` capability table under Context management; a partner PR to pydantic-ai's
+  `docs/navigation.yml`.
+- `tests/script_mode/`: this repository's tests with imports rewritten, `test_temporal.py` and
+  `test_dbos.py` included; the harness suite does not error on warnings, so the DBOS filter can go.
+  CI enforces 100% branch coverage, which this repository does not; expect to add cases.
+- Harness writing style in every docstring and doc: no em-dashes, no superlatives, `--` for asides.
+- After the merge: archive this repository with a README pointer; leave the PyPI release.
 
 ### Backlog after item 6
 
@@ -332,6 +407,7 @@ None recorded. Item 5 (JS surface) is closed by ADR 0007, not deferred.
 cd pydantic-ai-scriptmode
 make all            # format, lint, typecheck, test
 uv run pytest -q    # tests only
+make durability     # Temporal and DBOS composition tests; installs the `durability` group
 ```
 
 `timeout` is not available on this macOS shell; use a Python subprocess with a timeout if a test
@@ -342,8 +418,8 @@ opens.
 
 Call these with the Skill tool at the step named.
 
-- `mattpocock-skills:grilling`: on ADR 0008 before the user's yes, as on 0004 to 0007. Two rounds
-  worked for 0006: the frontier first, then what hung off the main choice.
+- `mattpocock-skills:grilling`: on any new ADR before the user's yes, as on 0004 to 0008. Two
+  rounds worked for 0006 and 0008: the frontier first, then what hung off the main choice.
 - `mattpocock-skills:domain-modeling`: before the ADR, for any noun the diff adds.
 - `mattpocock-skills:tdd`: every behaviour change; the seams are agreed in the build order.
 - `mattpocock-skills:writing-for-agents`: when editing the `run_script` description, the grammar

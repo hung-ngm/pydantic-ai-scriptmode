@@ -358,9 +358,9 @@ class Runner:
         in_flight: dict[asyncio.Task[None], str] = {}
         # One event for every settlement, rather than `asyncio.wait(FIRST_COMPLETED)`: the settled
         # tasks are then read in launch order (dict order), where `wait` hands back a set whose
-        # iteration order is not deterministic. Temporal's workflow sandbox refuses `asyncio.wait`
+        # iteration order is not deterministic. Temporal's workflow sandbox warns on `asyncio.wait`
         # for that reason, and the engine runs workflow-side there (`tests/test_temporal.py`).
-        settled = asyncio.Event()
+        woken = asyncio.Event()
         try:
             while True:
                 if not self.halted:
@@ -368,15 +368,15 @@ class Runner:
                     for step in self.ready_steps():
                         if step.name not in running:
                             task = asyncio.create_task(self.run_step(step))
-                            task.add_done_callback(lambda _: settled.set())
+                            task.add_done_callback(lambda _: woken.set())
                             in_flight[task] = step.name
                 if not in_flight:
                     if self.pending and not self.halted and not self.suspensions:
                         names = [s.name for s in self.pending]
                         raise PlanExecutionError(f'no step is ready but {names} are pending')
                     return
-                await settled.wait()
-                settled.clear()
+                await woken.wait()
+                woken.clear()
                 for task in [t for t in in_flight if t.done()]:
                     del in_flight[task]
                     task.result()  # re-raise anything run_step let through
