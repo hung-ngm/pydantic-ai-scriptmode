@@ -9,9 +9,11 @@ session; do not write handoff copies elsewhere (no temp-directory copies, no pro
 ## Where things stand
 
 Backlog items 0 to 4 are done: each has an accepted ADR, was built by TDD one commit per behaviour,
-reviewed with `code-review` at `medium`, and pushed. `make all` (ruff format, ruff check, pyright
-strict, pytest) is green: 231 passed, no xfails, no skips. The next item is 5, a JS surface, which
-starts with an ADR (see "Next session").
+reviewed with `code-review` at `medium`, and pushed. Item 5, a JS surface, is closed without code by
+ADR 0007 (accepted 2026-09-04): the reasons and the build plan are in the ADR, and the reopening
+condition is a model that cannot write the Python subset after the teaching copy. `make all` (ruff
+format, ruff check, pyright strict, pytest) is green: 231 passed, no xfails, no skips. The next
+item is 6, upstreaming to `pydantic-ai-harness`, which starts with an ADR (see "Next session").
 
 | Item | ADR | Commits on `main` | Done |
 | --- | --- | --- | --- |
@@ -21,7 +23,8 @@ starts with an ADR (see "Next session").
 | 2. Suspend and detach | 0004 | `3a0fc05` to `3ee811f` | 2026-09-03 |
 | 3. Script tools | 0005 | `ef394a3` to `23d2b06` | 2026-09-04 |
 | 4. Durable `RecordStore` | 0006 | `879088f` to `5c51cf7` | 2026-09-04 |
-| Tutor harness: Logfire instrumentation (the user's) | (none) | one commit after `2e1b557` | 2026-09-04 |
+| Tutor harness: Logfire instrumentation (the user's) | (none) | `caa6567`, `005dd57` | 2026-09-04 |
+| 5. JS surface: closed, no code | 0007 | one commit after `005dd57` | 2026-09-04 |
 
 `git log` has every commit with a one-line message that says what behaviour it added; this file
 does not repeat them.
@@ -41,10 +44,10 @@ Read these first, in order. Do not restate them here.
 
 - `README.md`: usage, "How it works", grammar table, options, retry messages, `RecordStore`.
 - `CONTEXT.md`: glossary (19 terms). Use these words in code, docs, tests, and this file.
-- `docs/adr/0001-*.md` to `0006-*.md`: why inert plan, why Python surface, why the catalog can
+- `docs/adr/0001-*.md` to `0007-*.md`: why inert plan, why Python surface, why the catalog can
   move into instructions, why a parked call resumes from the record, why a saved script is a tool
-  served by the toolset, why the package serializes the record and ships a SQLite store. Each ends
-  with the options it rejected; do not re-litigate them without new facts.
+  served by the toolset, why the package serializes the record and ships a SQLite store, why there
+  is no JS surface. Each ends with the options it rejected; do not re-litigate them without new facts.
 - Project memory `~/.claude/projects/-Users-hungng-Documents-AI-experiments-pydantic-experiments/memory/scriptmode-project.md`
   (loaded automatically via `MEMORY.md`).
 
@@ -300,65 +303,20 @@ calls from the `run_script` return's metadata, so a parked run's pre-park calls 
    `CONTEXT.md` and add any new term with an "Avoid" line. Run `code-review` at `medium` before
    the handoff; if it hits the session limit, retry once, then verify its candidate list by hand.
    Update this file in place at the end.
-3. Backlog item 5, a JS surface, or a decision to skip it. See the plan below.
+3. Backlog item 6, upstreaming to `pydantic-ai-harness`. See the plan below.
 
-### Plan for item 5: JS surface (next)
+### Plan for item 6: upstreaming to `pydantic-ai-harness` (next)
 
-Goal, in glossary terms: a second front end that compiles JavaScript to the same `Plan`, so the
-validator, engine, record, and toolset are untouched and the model may write either language.
+Goal: the capability lands in the harness following `agent_docs/capability-authoring.md` there. The
+capability already mirrors harness `CodeMode` conventions (`dynamic_catalog`, announcement,
+`for_run` isolation), so the port is mostly packaging. The ADR (`docs/adr/0008-*.md`) must decide
+whether the engine ships inside the harness or stays a dependency of it, and what the harness
+capability is named next to `CodeMode`. Read the harness `AGENTS.md`, `agent_docs/capability-
+authoring.md`, and `pydantic_ai_harness/code_mode/` first; grill the ADR before the user's yes.
 
-The case against, which ADR 0002 already made and which still holds: no maintained JavaScript
-parser exists in Python (`esprima` port unmaintained since 2018), so the surface means a
-hand-written parser for the subset; models in this ecosystem are taught Python by harness
-`CodeMode`; the teaching copy, grammar table, and rejection templates would double. The case for:
-callscript's own surface is JavaScript, so its language card and tests transfer; some models write
-tighter JS. The ADR must say whether the case has changed since 0002. It is a fair outcome to
-recommend skipping to item 6 (upstreaming), which is likely worth more; the user decides.
+### Backlog after item 6
 
-Read first, in this order, and do not restate them in the ADR:
-
-- `docs/adr/0002-python-authoring-surface.md`, the rejected options.
-- `callscript/packages/callscript/src/validate.ts` and `types.ts`: the JS subset callscript accepts
-  (`await` calls, `const` bindings, `for`/map fan-outs with a literal bound, `try`/`catch`, early
-  `return`) and its plan shape, which ours mirrors step for step.
-- `pydantic_ai_scriptmode/_compile.py` and `_expr.py`: what a front end must produce (`Plan` of
-  `CallStep`/`DeriveStep`/`GuardStep`, `bounds`, the `after` edges, `step_hash` inputs) and the
-  expression subset the evaluator runs. Note that `_expr.py` evaluates Python `ast` nodes: a JS
-  expression must either be translated to that `ast` or get a second evaluator, and the ADR must
-  choose (translation keeps one `NodeBudget` and one dunder guard).
-- `_teaching.py`: every rejection kind has one template; a second surface needs each template to
-  read correctly for both languages or a per-language table.
-
-What the ADR (`docs/adr/0007-js-surface.md`) must decide. Give a recommendation for each; grill it:
-
-- Whether to build it at all (see above). Recommended: skip unless the user has a model or a
-  workload that needs JS; record the reasons so the item is closed, not deferred again.
-- If built: the parser. Recommended: a hand-written recursive-descent parser for the subset only,
-  in `_js.py`, with no dependency; anything the subset does not cover is a `syntax_error` with
-  teaching copy, as today.
-- How the model picks the language. Recommended: `run_script(script, language='python'|'js')`
-  with the description carrying one grammar table per language; a second tool would double the
-  catalog.
-- Expression evaluation. Recommended: translate JS expressions to Python `ast` nodes so `_expr.py`
-  is shared; the ADR lists what does not map (`===`, `?.`, template literals, arrow functions in
-  `map`) and what each becomes.
-- Records across languages. `step_hash` hashes the plan, not the text, so a step written in either
-  language with the same shape is reused; say so, and add a test.
-- Glossary: **Surface** (the language a script is written in; avoid: dialect, syntax, front end)
-  if the item is built.
-
-Build order after the yes, one commit per behaviour: parser to `Plan` for each grammar row, tests
-mirroring `tests/test_compile.py`; expression translation with `tests/test_expr.py` cases run in
-both languages; `language` argument and per-language description; tutor trial with the JS surface
-forced (`SCRIPTMODE_LANGUAGE=js`), transcript to `.local/tutor-js-1.txt`; README grammar table per
-language; ADR accepted; this file.
-
-### Backlog after item 5
-
-6. Upstreaming to `pydantic-ai-harness`: follow `agent_docs/capability-authoring.md` there. The
-   capability already mirrors harness `CodeMode` conventions (`dynamic_catalog`, announcement,
-   `for_run` isolation) so the port is mostly packaging; the open question is whether the engine
-   ships inside the harness or as a dependency of it.
+None recorded. Item 5 (JS surface) is closed by ADR 0007, not deferred.
 
 ## Reference repos (read-only siblings)
 
@@ -384,9 +342,9 @@ opens.
 
 Call these with the Skill tool at the step named.
 
-- `mattpocock-skills:grilling`: on ADR 0007 before the user's yes, as on 0004 to 0006. Two rounds
+- `mattpocock-skills:grilling`: on ADR 0008 before the user's yes, as on 0004 to 0007. Two rounds
   worked for 0006: the frontier first, then what hung off the main choice.
-- `mattpocock-skills:domain-modeling`: before the ADR, for **Surface** and any noun the diff adds.
+- `mattpocock-skills:domain-modeling`: before the ADR, for any noun the diff adds.
 - `mattpocock-skills:tdd`: every behaviour change; the seams are agreed in the build order.
 - `mattpocock-skills:writing-for-agents`: when editing the `run_script` description, the grammar
   table, the announcement sentence, or the teaching copy; all are agent-facing prose.
