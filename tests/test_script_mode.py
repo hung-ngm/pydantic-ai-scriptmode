@@ -1014,10 +1014,7 @@ class TestFoldSemantics:
             toolsets=[hyphen_toolset('foo-bar', 'foo_bar')],
             capabilities=[ScriptMode[None](scripts=[tool])],
         )
-        with (
-            pytest.warns(UserWarning, match='collides'),
-            pytest.raises(UserError, match=r"(?s)'twice'.*`foo_bar`.*'foo-bar'.*'foo_bar'"),
-        ):
+        with pytest.raises(UserError, match=r"(?s)'twice'.*`foo_bar`.*'foo-bar'.*'foo_bar'"):
             await agent.run('go')
 
 
@@ -1034,3 +1031,19 @@ class TestScriptToolRecords:
         assert closed == ['api#1', 'api#3', 'api#1', 'api#3']
         returns = [p for m in result.all_messages() for p in m.parts if isinstance(p, ToolReturnPart)]
         assert [len(r.metadata['tool_calls']) for r in returns] == [3, 3]
+
+    async def test_a_saved_script_over_an_undiscovered_tool_is_hidden_until_the_tool_is_available(self):
+        tool = ScriptTool('use_later', '# Later\nx = await later(x=1)\nreturn x', returns=int)
+        agent, _ = build_agent(extra=[ToolSearch()], scripts=[tool])
+
+        @agent.tool_plain(defer_loading=True)
+        def later(x: int) -> int:
+            """Only reachable through search."""
+            return x
+
+        with pytest.warns(UserWarning, match=r"'use_later' is hidden.*`later`"):
+            model = await describe(agent)
+        assert model.last_model_request_parameters is not None
+        tools = {t.name: t for t in model.last_model_request_parameters.function_tools}
+        assert sorted(tools) == ['later', RUN_SCRIPT_TOOL_NAME, 'search_tools']
+        assert 'use_later' not in (tools[RUN_SCRIPT_TOOL_NAME].description or '')

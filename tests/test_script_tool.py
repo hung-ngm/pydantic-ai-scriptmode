@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
 from typing_extensions import NotRequired, TypedDict
 
 from pydantic_ai_scriptmode import CompileError, ScriptTool
+from pydantic_ai_scriptmode._script_tool import InputError
 
 CLOSE_STALE = """
 # Close every stale issue in a repository
@@ -49,7 +49,7 @@ class TestParameters:
         }
         assert tool.return_schema == {'type': 'object', 'additionalProperties': {'type': 'integer'}}
         assert tool.validate_input({'repo': 'api'}) == {'repo': 'api'}
-        with pytest.raises(ValidationError):
+        with pytest.raises(InputError, match='repo'):
             tool.validate_input({'repo': 3})
 
     def test_a_json_schema_passes_through_and_the_default_takes_no_arguments(self):
@@ -57,6 +57,10 @@ class TestParameters:
         tool = ScriptTool('close_stale', CLOSE_STALE, parameters=schema)
         assert tool.parameters_json_schema == schema
         assert tool.validate_input({'repo': 'api', 'extra': 1}) == {'repo': 'api', 'extra': 1}
+        with pytest.raises(InputError, match='repo'):
+            tool.validate_input({})
+        with pytest.raises(InputError, match='object'):
+            tool.validate_input([])  # pyright: ignore[reportArgumentType]
         bare = ScriptTool('list_all', '# List all\nissues = await list_issues(repo="api")')
         assert bare.parameters_json_schema == {'type': 'object', 'properties': {}}
         assert bare.return_schema is None

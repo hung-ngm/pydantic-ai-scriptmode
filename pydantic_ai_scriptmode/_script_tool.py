@@ -6,7 +6,7 @@ import re
 from dataclasses import KW_ONLY, dataclass, field
 from typing import Any
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 from pydantic_ai.tools import GenerateToolJsonSchema
 from pydantic_core import to_jsonable_python
 
@@ -18,6 +18,10 @@ JsonSchema = dict[str, Any]
 
 _NO_PARAMETERS: JsonSchema = {'type': 'object', 'properties': {}}
 _IDENTIFIER = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+
+
+class InputError(ValueError):
+    """The call's arguments do not fit the script tool's `parameters`."""
 
 
 @dataclass(frozen=True)
@@ -80,10 +84,23 @@ class ScriptTool:
         )
 
     def validate_input(self, args: dict[str, Any]) -> dict[str, Any]:
-        """The call's arguments as the plain data a plan reads as `input`; a Python type validates them."""
-        if self._adapter is None:
-            return args
-        return to_jsonable_python(self._adapter.validate_python(args))
+        """The call's arguments as the plain data a plan reads as `input`.
+
+        A Python type validates them fully. A JSON schema is checked for shape only: an object with
+        every `required` key present; types are not checked. Raises `InputError`.
+        """
+        if self._adapter is not None:
+            try:
+                return to_jsonable_python(self._adapter.validate_python(args))
+            except ValidationError as e:
+                details = '; '.join(f'{".".join(str(p) for p in err["loc"])}: {err["msg"]}' for err in e.errors())
+                raise InputError(f'invalid arguments for `{self.name}`: {details}') from e
+        if not isinstance(args, dict):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise InputError(f'invalid arguments for `{self.name}`: expected an object')
+        missing = [k for k in self.parameters_json_schema.get('required', ()) if k not in args]
+        if missing:
+            raise InputError(f'invalid arguments for `{self.name}`: missing {", ".join(f"`{k}`" for k in missing)}')
+        return args
 
 
 def _schema(adapter: TypeAdapter[Any]) -> JsonSchema:

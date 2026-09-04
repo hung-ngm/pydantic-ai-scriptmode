@@ -25,7 +25,7 @@ from pydantic_ai_scriptmode._compile import CompileError, compile_script
 from pydantic_ai_scriptmode._execute import CallError, ExecuteResult, Suspend, execute_plan
 from pydantic_ai_scriptmode._plan import CallStep, Limits, Plan
 from pydantic_ai_scriptmode._record import InMemoryRecordStore, RecordStore
-from pydantic_ai_scriptmode._script_tool import ScriptTool
+from pydantic_ai_scriptmode._script_tool import InputError, ScriptTool
 from pydantic_ai_scriptmode._teaching import Issue
 from pydantic_ai_scriptmode._validate import ToolSignature, validate_plan
 
@@ -291,6 +291,7 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
     # The catalog stashed by `get_tools` and read back by `get_instructions` in the same step.
     # Empty when `dynamic_catalog` is off or nothing is folded.
     _last_catalog: str = field(default='', init=False, repr=False)
+    _warned_hidden_scripts: set[str] = field(default_factory=set[str], init=False, repr=False)
 
     async def get_tools(self, ctx: RunContext[AgentDepsT]) -> dict[str, ToolsetTool[AgentDepsT]]:
         """Return `run_script` plus the tools that stay native."""
@@ -300,17 +301,26 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
         script_tools = self._script_tools(wrapped_tools)
         eligible: dict[str, ToolsetTool[AgentDepsT]] = {}
         native: dict[str, ToolsetTool[AgentDepsT]] = {}
+        unavailable: set[str] = set()
         for name, tool in {**wrapped_tools, **script_tools}.items():
             td = tool.tool_def
-            if (
-                td.tool_kind is not None
-                or not ctx.is_tool_available(td)
-                or td.unless_native
-                or _is_code_execution_tool(td)
-            ):
+            if td.tool_kind is not None or td.unless_native or _is_code_execution_tool(td):
                 native[name] = tool
+            elif not ctx.is_tool_available(td):
+                native[name] = tool
+                unavailable.add(sanitize_tool_name(name))
             else:
                 eligible[name] = tool
+
+        # A saved script may call any eligible tool: the selector is the model's view, not the
+        # developer's. This fold is quiet; the folded one below carries the warnings.
+        eligible_defs, eligible_sanitized, ambiguous = self._fold(eligible, quiet=True)
+        hidden = self._catalog_scripts(
+            script_tools, wrapped_tools, eligible_defs, eligible_sanitized, ambiguous, unavailable
+        )
+        for name in hidden:
+            del eligible[name]
+            del script_tools[name]
 
         folded: dict[str, ToolsetTool[AgentDepsT]] = {}
         for name, tool in eligible.items():
@@ -319,10 +329,6 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
             else:
                 native[name] = tool
         callable_defs, sanitized_to_original, _ = self._fold(folded)
-        # A saved script may call any eligible tool: the selector is the model's view, not the
-        # developer's. This fold is quiet; the folded one above carries the warnings.
-        eligible_defs, eligible_sanitized, ambiguous = self._fold(eligible, quiet=True)
-        self._catalog_scripts(script_tools, wrapped_tools, eligible_defs, eligible_sanitized, ambiguous)
         if self.dynamic_catalog:
             description = self._static_description() + '\n\n' + _CATALOG_IN_INSTRUCTIONS
             self._last_catalog = _catalog(callable_defs)
@@ -356,21 +362,41 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
         eligible_defs: dict[str, ToolDefinition],
         sanitized_to_original: dict[str, str],
         ambiguous: dict[str, tuple[str, str]],
-    ) -> None:
-        """Give each script tool its catalog: every eligible wrapped tool plus the script tools declared before it."""
+        unavailable: set[str],
+    ) -> list[str]:
+        """Give each script tool its catalog: every eligible wrapped tool plus the script tools declared before it.
+
+        Returns the script tools hidden this step: those calling a tool that exists but is not
+        available yet (undiscovered by `ToolSearch`, say), or another hidden script tool. A tool that
+        exists nowhere is the developer's error and raises.
+        """
+        hidden: list[str] = []
         wrapped_defs = {
             safe: td for safe, td in eligible_defs.items() if sanitized_to_original.get(safe, safe) not in script_tools
         }
         wrapped_sanitized = {safe: name for safe, name in sanitized_to_original.items() if name not in script_tools}
         earlier: dict[str, _ScriptToolsetTool[AgentDepsT]] = {}
         for name, tool in script_tools.items():
-            for step in tool.script.plan.steps:
-                if isinstance(step, CallStep) and step.tool in ambiguous:
-                    first, second = ambiguous[step.tool]
-                    raise UserError(
-                        f"Script tool '{name}' calls `{step.tool}`, which is ambiguous: tools '{first}' and "
-                        f"'{second}' both sanitize to it. Rename one of them."
+            calls = {step.tool for step in tool.script.plan.steps if isinstance(step, CallStep)}
+            for called in sorted(calls & set(ambiguous)):
+                first, second = ambiguous[called]
+                raise UserError(
+                    f"Script tool '{name}' calls `{called}`, which is ambiguous: tools '{first}' and "
+                    f"'{second}' both sanitize to it. Rename one of them."
+                )
+            waiting = sorted(calls & unavailable)
+            if waiting:
+                hidden.append(name)
+                unavailable.add(name)
+                if name not in self._warned_hidden_scripts:
+                    self._warned_hidden_scripts.add(name)
+                    warnings.warn(
+                        f"ScriptMode: script tool '{name}' is hidden while {', '.join(f'`{w}`' for w in waiting)} "
+                        'is not available (not discovered yet, or hidden by a prepare hook).',
+                        UserWarning,
+                        stacklevel=2,
                     )
+                continue
             tool.callable_defs = {**wrapped_defs, **{n: t.tool_def for n, t in earlier.items()}}
             tool.sanitized_to_original = wrapped_sanitized
             tool.tools = {**wrapped_tools, **earlier}
@@ -385,6 +411,7 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
                         issues,
                     )
                 )
+        return hidden
 
     def _script_tools(
         self, wrapped_tools: dict[str, ToolsetTool[AgentDepsT]]
@@ -427,6 +454,7 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
         if rebuilt is not self and isinstance(rebuilt, ScriptModeToolset):
             rebuilt._last_catalog = self._last_catalog
             rebuilt._warned_no_return_schema = self._warned_no_return_schema
+            rebuilt._warned_hidden_scripts = self._warned_hidden_scripts
         return rebuilt
 
     async def get_instructions(
@@ -484,9 +512,8 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
         script = tool.script
         try:
             input = script.validate_input(tool_args)
-        except ValidationError as e:
-            details = '; '.join(f'{".".join(str(p) for p in err["loc"])}: {err["msg"]}' for err in e.errors())
-            raise ModelRetry(f'invalid arguments for `{script.name}`: {details}') from e
+        except InputError as e:
+            raise ModelRetry(str(e)) from e
         tool_manager = self._nested_manager(ctx, tool.tools)
         dispatch = _Dispatcher(tool_manager, tool.sanitized_to_original, ctx.tool_call_id or script.name)
         key = None if ctx.conversation_id is None else _script_tool_key(ctx.conversation_id, script.name, input)
