@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, Protocol
+
+from pydantic_core import to_jsonable_python
 
 from pydantic_ai_scriptmode._plan import Plan, Step, step_hash
 
@@ -24,6 +26,11 @@ class ItemRecord:
     value: Any = None
     error: str | None = None
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ItemRecord:
+        """Rebuild an item from `to_dict`'s object; an unknown key is a `TypeError`."""
+        return cls(**data)
+
 
 @dataclass
 class StepRecord:
@@ -39,6 +46,13 @@ class StepRecord:
     error: str | None = None
     items: list[ItemRecord] | None = None
     """Per-item outcomes of a parked fan-out; `None` for anything else."""
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> StepRecord:
+        """Rebuild a step record from `to_dict`'s object; an unknown key is a `TypeError`."""
+        rest = dict(data)
+        items = rest.pop('items', None)
+        return cls(**rest, items=None if items is None else [ItemRecord.from_dict(item) for item in items])
 
 
 @dataclass
@@ -56,6 +70,25 @@ class Record:
     """The steps whose suspension the last run surfaced, in plan order; only these may take a resolution."""
     input: Any = None
     """The `input` the last run read. A step that reads `input` is reused only under the same one."""
+
+    def to_dict(self) -> dict[str, Any]:
+        """The record as a JSON-safe object, so a store moves it and nothing else (ADR 0006).
+
+        Values go through `to_jsonable_python`: a custom `Dispatch` may settle a step to a `datetime`
+        or a tuple, and a store should not have to know. A tuple comes back as a list.
+        """
+        return to_jsonable_python(asdict(self))
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Record:
+        """Rebuild a record from `to_dict`'s object.
+
+        Strict: an unknown key is a `TypeError`, since the package wrote the object and a dropped
+        field would be a silent wrong resume.
+        """
+        rest = dict(data)
+        steps = rest.pop('steps', {})
+        return cls(**rest, steps={name: StepRecord.from_dict(entry) for name, entry in steps.items()})
 
 
 class RecordStore(Protocol):

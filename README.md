@@ -210,13 +210,14 @@ error branch may catch; a spent expression budget fails the step outright.
 ### RecordStore
 
 A store has two async methods keyed by a string: the conversation id for `run_script`, and the
-conversation id, tool name, and input hash for a script tool. Anything with this shape works:
+conversation id, tool name, and input hash for a script tool. `Record.to_dict()` is a JSON-safe
+object and `Record.from_dict()` rebuilds it, so a store only moves that object. Anything with this
+shape works:
 
 ```python
 import json
-from dataclasses import asdict
 
-from pydantic_ai_scriptmode import ItemRecord, Record, ScriptMode, StepRecord
+from pydantic_ai_scriptmode import Record, ScriptMode
 
 
 class RedisRecordStore:
@@ -225,17 +226,10 @@ class RedisRecordStore:
 
     async def get(self, key: str) -> Record | None:
         raw = await self.redis.get(f'scriptmode:{key}')
-        if raw is None:
-            return None
-        data = json.loads(raw)
-        steps: dict[str, StepRecord] = {}
-        for name, entry in data.pop('steps').items():
-            items = entry.pop('items')
-            steps[name] = StepRecord(**entry, items=None if items is None else [ItemRecord(**i) for i in items])
-        return Record(steps=steps, **data)
+        return None if raw is None else Record.from_dict(json.loads(raw))
 
     async def put(self, key: str, record: Record) -> None:
-        await self.redis.set(f'scriptmode:{key}', json.dumps(asdict(record)))
+        await self.redis.set(f'scriptmode:{key}', json.dumps(record.to_dict()))
 
 
 agent = Agent(..., capabilities=[ScriptMode(record_store=RedisRecordStore(redis))])
