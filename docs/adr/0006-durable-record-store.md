@@ -20,9 +20,10 @@ about the keys it knows, since the package wrote them. Second, the package ships
 uses the standard library `sqlite3` with one table, `records(key TEXT PRIMARY KEY, record TEXT NOT
 NULL, updated_at TEXT NOT NULL)`, created on first use; `put` is an upsert of the JSON object and
 `get` parses it or returns `None`; `updated_at` is ISO 8601 UTC. The store holds one connection
-opened with `check_same_thread=False` and runs every statement in `asyncio.to_thread` under an
-`asyncio.Lock`, so the event loop is never blocked and the connection is never used by two threads
-at once. One connection rather than one per call is what makes `':memory:'` a working store (a fresh
+opened with `check_same_thread=False` and runs every statement in `asyncio.to_thread` under a `threading.Lock`
+taken in the worker thread, so the event loop is never blocked, the connection is never used by two
+threads at once, and agents on different event loops can share one store (an `asyncio.Lock` binds to
+the loop it first waits on; found in review). One connection rather than one per call is what makes `':memory:'` a working store (a fresh
 connection to `':memory:'` is a fresh database), and `SQLiteRecordStore(':memory:')` is the test
 double for anything that needs a store without the dict. A key is an opaque string to SQLite, so a
 script tool's `conversation/name/digest` needs no escaping. `close()` releases the connection; there
