@@ -748,6 +748,10 @@ def not_close_stale(ctx: RunContext[None], td: ToolDefinition) -> bool:
     return td.name != 'close_stale'
 
 
+def native_close_tools(ctx: RunContext[None], td: ToolDefinition) -> bool:
+    return not td.name.startswith('close_')
+
+
 class TestScriptTools:
     async def test_a_script_tool_is_folded_into_the_catalog_by_default(self):
         agent, _ = build_agent(scripts=[CLOSE_STALE])
@@ -805,3 +809,36 @@ class TestScriptTools:
             'close_issue',
             'close_issue',
         ]
+
+    async def test_a_bad_argument_is_a_retry_and_a_failed_step_names_the_step(self):
+        failing = ScriptTool(
+            'close_missing',
+            '# Close an issue that is not there\nr = await close_issue(repo=input.repo, number=input.number)\nreturn r',
+            parameters={'type': 'object', 'properties': {'repo': {'type': 'string'}, 'number': {'type': 'integer'}}},
+        )
+        agent, _ = build_agent(
+            ToolCallPart('close_stale', {'repo': 3}),
+            ToolCallPart('close_missing', {'repo': 'api', 'number': 'x'}),
+            ToolCallPart('close_stale', {'repo': 'api'}),
+            scripts=[CLOSE_STALE, failing],
+            tools=native_close_tools,
+        )
+        result = await agent.run('go')
+        messages = result.all_messages()
+        retries = [
+            p for m in messages if isinstance(m, ModelRequest) for p in m.parts if isinstance(p, RetryPromptPart)
+        ]
+        assert len(retries) == 2
+        assert 'repo' in retries[0].model_response() and 'string' in retries[0].model_response()
+        assert (
+            retries[1]
+            .model_response()
+            .startswith('`close_missing` failed at step `r`: invalid arguments for `close_issue`')
+        )
+        assert result.output == "{'closed': 2}"
+
+    async def test_a_script_catches_a_script_tool_failure(self):
+        script = "try:\n    r = await close_stale(repo='api')\nexcept Exception as e:\n    r = e\nreturn r"
+        agent, _ = build_agent(script, scripts=[CLOSE_STALE], limits=Limits(max_result_bytes=1))
+        result = await agent.run('go')
+        assert result.output.startswith("{'status': 'done', 'output': '`close_stale` failed at step `issues`:")

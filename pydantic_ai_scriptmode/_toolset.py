@@ -443,7 +443,11 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
     ) -> Any:
         """Run a saved plan with the call's arguments as `input`; the return value is the plan's output."""
         script = tool.script
-        input = script.validate_input(tool_args)
+        try:
+            input = script.validate_input(tool_args)
+        except ValidationError as e:
+            details = '; '.join(f'{".".join(str(p) for p in err["loc"])}: {err["msg"]}' for err in e.errors())
+            raise ModelRetry(f'invalid arguments for `{script.name}`: {details}') from e
         tool_manager = self._nested_manager(ctx, tool.tools)
         dispatch = _Dispatcher(tool_manager, tool.sanitized_to_original, ctx.tool_call_id or script.name)
         key = None if ctx.conversation_id is None else _script_tool_key(ctx.conversation_id, script.name, input)
