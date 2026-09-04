@@ -6,6 +6,7 @@ Plain tool use pays a model round trip per call; a script pays one.
 Run:  uv run python examples/tutor.py [task ...]   (tasks: practice, reviews, impossible, reset)
 Reads ANTHROPIC_API_KEY from `.env` via python-dotenv; a standard workspace key, not an identity-linked
 one. Override the model with SCRIPTMODE_TRIAL_MODEL; set SCRIPTMODE_DYNAMIC_CATALOG=1 to trial the catalog in instructions.
+The script agent also has one script tool, `weak_topics`; set SCRIPTMODE_NATIVE_SCRIPTS=1 to keep it native.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import os
 import random
 import sys
 from dataclasses import dataclass
+from typing import Any, cast
 
 from dotenv import load_dotenv
 from pydantic_ai import Agent, ApprovalRequired, DeferredToolRequests, ModelRetry, RunContext
@@ -25,14 +27,17 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolReturnPart,
 )
+from pydantic_ai.tools import ToolDefinition
 from pydantic_ai.toolsets import FunctionToolset
 from pydantic_ai.usage import RunUsage
+from typing_extensions import TypedDict
 
-from pydantic_ai_scriptmode import RUN_SCRIPT_TOOL_NAME, ScriptMode
+from pydantic_ai_scriptmode import RUN_SCRIPT_TOOL_NAME, ScriptMode, ScriptTool
 
 load_dotenv()
 MODEL = os.environ.get('SCRIPTMODE_TRIAL_MODEL', 'anthropic:claude-opus-5')
 DYNAMIC_CATALOG = os.environ.get('SCRIPTMODE_DYNAMIC_CATALOG', '') == '1'
+NATIVE_SCRIPTS = os.environ.get('SCRIPTMODE_NATIVE_SCRIPTS', '') == '1'
 
 # -- the store -----------------------------------------------------------------------------------
 
@@ -126,6 +131,34 @@ async def reset_mastery(ctx: RunContext[None], topic_id: str) -> str:
     return f'reset {topic_id}'
 
 
+# -- a saved script -------------------------------------------------------------------------------
+
+
+class WeakTopicsParams(TypedDict):
+    """Arguments of `weak_topics`."""
+
+    threshold: float
+
+
+WEAK_TOPICS = ScriptTool(
+    'weak_topics',
+    """
+# The topics the student scores below a threshold on, weakest first
+topics = await list_topics()
+mastery = [await get_mastery(topic_id=t.id) for t in topics[:20]]
+weak = [m for m in mastery if m.score < input.threshold]
+return sorted(weak, key=lambda m: m.score)
+""",
+    parameters=WeakTopicsParams,
+    returns=list[Mastery],
+)
+
+
+def not_script_tools(ctx: RunContext[None], td: ToolDefinition) -> bool:
+    """Keep the script tools native; every other tool is folded."""
+    return not (td.metadata or {}).get('script_mode', False)
+
+
 INSTRUCTIONS = 'You are a maths tutor managing one student. Reply with a one-line summary when done.'
 
 # The same tools, two ways: called one by one, or folded behind `run_script`.
@@ -138,7 +171,11 @@ script_agent: Agent[None, Output] = Agent(
     deps_type=type(None),
     output_type=[str, DeferredToolRequests],
     toolsets=[tools],
-    capabilities=[ScriptMode[None](dynamic_catalog=DYNAMIC_CATALOG)],
+    capabilities=[
+        ScriptMode[None](
+            tools=not_script_tools if NATIVE_SCRIPTS else 'all', dynamic_catalog=DYNAMIC_CATALOG, scripts=[WEAK_TOPICS]
+        )
+    ],
     instructions=INSTRUCTIONS + ' Use run_script to do a whole task in one call.',
 )
 
@@ -162,6 +199,16 @@ class Stats:
     tokens: int
 
 
+def nested_calls(metadata: Any) -> int:
+    """Calls a script made, counting through script tools it called."""
+    if not isinstance(metadata, dict) or 'tool_calls' not in metadata:
+        return 0
+    data = cast(dict[str, Any], metadata)
+    calls = cast(dict[str, ToolCallPart], data['tool_calls'])
+    returns = cast(dict[str, ToolReturnPart], data.get('tool_returns', {}))
+    return len(calls) + sum(nested_calls(r.metadata) for r in returns.values())
+
+
 def show(messages: list[ModelMessage], usage: RunUsage) -> Stats:
     """Print every script, retry, and return in the run; count what it cost."""
     scripts = retries = tool_calls = 0
@@ -173,6 +220,8 @@ def show(messages: list[ModelMessage], usage: RunUsage) -> Stats:
                     print(f'--- script {scripts}\n{p.args_as_dict()["script"]}')
                 elif isinstance(p, ToolCallPart):
                     tool_calls += 1
+                    if p.tool_name == WEAK_TOPICS.name:
+                        print(f'--- native script tool call: {p.tool_name} {p.args_as_dict()}')
         else:
             for p in m.parts:
                 if isinstance(p, RetryPromptPart):
@@ -180,7 +229,9 @@ def show(messages: list[ModelMessage], usage: RunUsage) -> Stats:
                     print(f'--- retry\n{p.model_response()}')
                 elif isinstance(p, ToolReturnPart) and p.tool_name == RUN_SCRIPT_TOOL_NAME:
                     print(f'--- return\n{p.content}')
-                    tool_calls += len(p.metadata['tool_calls']) if p.metadata else 0
+                    tool_calls += nested_calls(p.metadata)
+                elif isinstance(p, ToolReturnPart) and p.tool_name == WEAK_TOPICS.name:
+                    tool_calls += nested_calls(p.metadata)
     return Stats(usage.requests, tool_calls, retries, usage.total_tokens)
 
 
