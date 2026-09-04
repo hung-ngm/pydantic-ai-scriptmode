@@ -41,6 +41,7 @@ lint = [
     'pyright>=1.1.408',
 ]
 examples = [
+    'logfire>=4.41.0',
     'pydantic-ai-slim[anthropic]>=2.36.0',
     'python-dotenv>=1.0',
 ]

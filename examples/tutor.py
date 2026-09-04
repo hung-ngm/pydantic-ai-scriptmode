@@ -18,6 +18,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any, cast
 
+import logfire
 from dotenv import load_dotenv
 from pydantic_ai import Agent, ApprovalRequired, DeferredToolRequests, ModelRetry, RunContext
 from pydantic_ai.messages import (
@@ -38,6 +39,18 @@ load_dotenv()
 MODEL = os.environ.get('SCRIPTMODE_TRIAL_MODEL', 'anthropic:claude-opus-5')
 DYNAMIC_CATALOG = os.environ.get('SCRIPTMODE_DYNAMIC_CATALOG', '') == '1'
 NATIVE_SCRIPTS = os.environ.get('SCRIPTMODE_NATIVE_SCRIPTS', '') == '1'
+
+logfire.configure(
+    service_name='pydantic-ai-scriptmode-tutor',
+    service_version='0.1.0',
+    environment=os.environ.get('DEPLOYMENT_ENVIRONMENT', 'development'),
+)
+logfire.instrument_pydantic_ai()
+
+AGENT_RUNS = logfire.metric_counter('scriptmode.agent.runs', unit='1')
+MODEL_REQUESTS = logfire.metric_histogram('scriptmode.agent.model_requests', unit='1')
+TOOL_CALLS = logfire.metric_histogram('scriptmode.agent.tool_calls', unit='1')
+TOKENS = logfire.metric_histogram('scriptmode.agent.tokens', unit='1')
 
 # -- the store -----------------------------------------------------------------------------------
 
@@ -251,9 +264,23 @@ async def run_task(agent: Agent[None, Output], label: str, prompt: str) -> Stats
             )
             usage.incr(result.usage)
     except Exception as e:  # noqa: BLE001 - the failure is the finding
+        logfire.exception('Tutor run failed in {mode}', mode=label, model=MODEL)
         print(f'raised {type(e).__name__}: {e}\n')
         return None
     stats = show(result.all_messages(), usage)
+    metric_attributes = {'mode': label, 'model': MODEL}
+    AGENT_RUNS.add(1, metric_attributes)
+    MODEL_REQUESTS.record(stats.requests, metric_attributes)
+    TOOL_CALLS.record(stats.tool_calls, metric_attributes)
+    TOKENS.record(stats.tokens, metric_attributes)
+    logfire.info(
+        'Tutor run completed in {mode}: {requests} model requests, {tool_calls} tool calls, {tokens} tokens',
+        mode=label,
+        model=MODEL,
+        requests=stats.requests,
+        tool_calls=stats.tool_calls,
+        tokens=stats.tokens,
+    )
     print(f'--- answer\n{result.output}')
     print(
         f'--- {stats.requests} model requests, {stats.tool_calls} tool calls, {stats.retries} retries, {stats.tokens} tokens\n'
