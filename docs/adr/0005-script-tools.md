@@ -30,8 +30,10 @@ A script tool keeps its own record, keyed by conversation id, tool name, and a h
 not the conversation's record that `run_script` uses. Sharing would need callscript's explicit
 merge: `Record.status`, `at`, `parked`, and `suspend_attempts` describe the last run, and a script
 tool that ran inside a `run_script` would overwrite them mid-run, then be overwritten by the outer
-`put`, which loaded its steps before the inner run began. The per-input key keeps the reuse rule
-intact (a step that reads `input` is never reused; the rest follow the hash), lets a fan-out call
+`put`, which loaded its steps before the inner run began. The per-input key lets the reuse rule
+treat `input` as data: the record keeps the `input` it was produced under, and a step that reads
+it is reused or re-entered only under an equal one (without this an approved re-run could not find
+the parked step, since every step of a saved script reads `input` somewhere). It lets a fan-out call
 the same script tool with five inputs without the five records racing, and makes resume work:
 Pydantic AI re-issues an approved call with the same arguments, so the same key is found. A
 suspension inside a script tool takes the ADR 0004 path with no new plumbing. Called by the model,
@@ -49,7 +51,7 @@ the script reads against the declared parameters, so a misspelt field fails at c
 
 The costs. `RecordStore` is keyed by a record key, not only a conversation id; the protocol's
 parameter is renamed and the README example changes, though every existing store keeps working
-since the key is still one string. The nested `ToolManager` for `run_script` is built over the
+since the key is still one string. `Record` grows an `input` field that every store must carry. The nested `ToolManager` for `run_script` is built over the
 `ScriptModeToolset` instead of the wrapped toolset, so `call_tool` routes script tools to itself
 and everything else onward; a test pins that a plain nested call still reaches the wrapped
 toolset. A script tool's catalog is computed per tool (the eligible tools plus the earlier script tools),

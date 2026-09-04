@@ -69,7 +69,8 @@ class ScriptMode(AbstractCapability[AgentDepsT]):
     """Hard bounds on a plan. The live numbers are rendered into the `run_script` description."""
 
     record_store: RecordStore = field(default_factory=InMemoryRecordStore)
-    """Where settled steps live between `run_script` calls, keyed by `conversation_id`."""
+    """Where settled steps live between calls: one record per conversation for `run_script`, and one per
+    conversation, script tool, and input for a script tool."""
 
     scripts: Sequence[ScriptTool] = ()
     """Saved scripts served as tools. Each goes through `tools` like any other tool, so by default it

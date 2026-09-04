@@ -59,8 +59,9 @@ without Pydantic AI (see "Using the engine directly").
    which is the only way a plan reaches a tool. Expressions are evaluated by a tree-walking
    interpreter with a shared node budget; there is no `eval`.
 4. **Record**. Every step settles to a `StepRecord` (done, skipped, error, returned, or suspended)
-   keyed by name and by a hash of its authored form. The `Record` is stored per conversation, even
-   when the run fails or parks, so a corrected or resumed script reuses the steps that already settled.
+   keyed by name and by a hash of its authored form. The `Record` is stored per conversation (per
+   conversation, tool, and input for a script tool), even when the run fails or parks, so a
+   corrected or resumed script reuses the steps that already settled.
 
 A call that needs an approval parks the run instead of failing it. If nothing resolved the
 `ApprovalRequired` inline, the step settles as `suspended`, the steps that do not depend on it keep
@@ -114,7 +115,8 @@ ternaries, lambdas, list and dict comprehensions, a whitelist of builtins (`len`
 `sorted`, `reversed`, `enumerate`, `zip`, `any`, `all`, `abs`, `round`, `str`, `int`, `float`, `bool`,
 `list`, `dict`, `set`, `range`), `json.dumps`/`json.loads`, non-mutating `str` methods, `list.index`
 and `list.count`, and `dict.get`/`keys`/`values`/`items`. Every value stays JSON-shaped: `zip`,
-`enumerate`, and `set` return lists. `input` is bound by the engine and is never reused from a record.
+`enumerate`, and `set` return lists. `input` is bound by the engine: `None` in `run_script`, the call's
+arguments in a script tool.
 
 ## Options
 
@@ -129,6 +131,59 @@ and `list.count`, and `dict.get`/`keys`/`values`/`items`. Every value stays JSON
 - `dynamic_catalog`: `False` by default. When `True`, the folded tools' signatures move out of the
   `run_script` description into the system instructions as a dynamic `InstructionPart`, and each
   tool discovered by `ToolSearch` is announced with a short system message. See "How it works".
+- `scripts`: a list of `ScriptTool`s, below. Saved scripts served as tools.
+
+### Script tools
+
+A script that worked once can be kept: save its text under a name and the model calls it like any
+tool, without authoring it again.
+
+```python
+from typing_extensions import TypedDict
+
+from pydantic_ai_scriptmode import ScriptMode, ScriptTool
+
+
+class CloseStaleParams(TypedDict):
+    repo: str
+
+
+close_stale = ScriptTool(
+    'close_stale',
+    """
+# Close every stale issue in a repository
+issues = await list_issues(repo=input.repo)
+stale = [i for i in issues if i.stale]
+closed = [await close_issue(repo=input.repo, number=i.number) for i in stale[:20]]
+return {'closed': len(closed)}
+""",
+    parameters=CloseStaleParams,
+    returns=dict[str, int],
+)
+
+agent = Agent(..., capabilities=[ScriptMode(scripts=[close_stale])])
+```
+
+The script is compiled where the tool is defined, so a script that does not compile raises
+`CompileError` at import. The call's arguments are bound as `input`; `parameters` is a Python type
+(a `TypedDict`, `BaseModel`, or dataclass, validated) or a JSON schema (passed through), and every
+`input.<field>` the script reads must be a declared parameter unless the schema is open. `returns`
+is optional and only shapes the signature the model sees; `description` defaults to the intent line.
+
+A script tool goes through `tools` like any other tool: by default it is folded and appears in the
+catalog next to the tools it composes, so a script can call it; a predicate that excludes it keeps
+it native. The saved script itself may call every tool eligible for folding, whether or not `tools`
+folded it, plus the script tools declared before it in `scripts`, so script tools compose and a
+cycle is impossible. A saved script that names a tool the agent does not have is a `UserError` when
+the tools are built. The call returns the plan's output, whether the last line or a guard produced
+it. A failed step raises `ModelRetry` naming the step, so the model can change the arguments or give
+up, and a script that called the tool catches it as a failed call. A call that needs approval parks
+the script tool the same way it parks `run_script`, and the approval request's metadata names the
+script tool; called from inside a script, the outer script parks and one approval resumes both.
+
+Each script tool call keeps its own record, keyed by conversation, tool name, and input, so a saved
+script never reuses a step the model's script settled, two calls with different inputs do not share
+one, and the approved re-run finds the record it parked under.
 
 ### Limits
 
@@ -148,7 +203,8 @@ error branch may catch; a spent expression budget fails the step outright.
 
 ### RecordStore
 
-A store has two async methods keyed by `conversation_id`. Anything with this shape works:
+A store has two async methods keyed by a string: the conversation id for `run_script`, and the
+conversation id, tool name, and input hash for a script tool. Anything with this shape works:
 
 ```python
 import json
@@ -161,8 +217,8 @@ class RedisRecordStore:
     def __init__(self, redis) -> None:
         self.redis = redis
 
-    async def get(self, conversation_id: str) -> Record | None:
-        raw = await self.redis.get(f'scriptmode:{conversation_id}')
+    async def get(self, key: str) -> Record | None:
+        raw = await self.redis.get(f'scriptmode:{key}')
         if raw is None:
             return None
         data = json.loads(raw)
@@ -172,8 +228,8 @@ class RedisRecordStore:
             steps[name] = StepRecord(**entry, items=None if items is None else [ItemRecord(**i) for i in items])
         return Record(steps=steps, **data)
 
-    async def put(self, conversation_id: str, record: Record) -> None:
-        await self.redis.set(f'scriptmode:{conversation_id}', json.dumps(asdict(record)))
+    async def put(self, key: str, record: Record) -> None:
+        await self.redis.set(f'scriptmode:{key}', json.dumps(asdict(record)))
 
 
 agent = Agent(..., capabilities=[ScriptMode(record_store=RedisRecordStore(redis))])
@@ -181,8 +237,10 @@ agent = Agent(..., capabilities=[ScriptMode(record_store=RedisRecordStore(redis)
 
 The reuse rule is stricter than callscript's. A settled step is taken as given only when the record
 holds an entry under the same name with the same authored hash **and** every step it reads was itself
-reused. A step that reads `input` is never reused. `_reason` and line numbers are not part of the
-hash, so rewording a reason does not invalidate a step.
+reused. A step that reads `input` is reused only when the record was produced under the same `input`
+(the record keeps it), which for `run_script` is always `None` and for a script tool is the call's
+arguments. `_reason` and line numbers are not part of the hash, so rewording a reason does not
+invalidate a step.
 
 ## What the model sees on failure
 

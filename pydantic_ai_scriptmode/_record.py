@@ -59,14 +59,18 @@ class Record:
 
 
 class RecordStore(Protocol):
-    """Where records live between `run_script` calls, keyed by conversation id."""
+    """Where records live between calls, keyed by a string.
 
-    async def get(self, conversation_id: str) -> Record | None:
-        """Return the record for a conversation, or `None` when there is none yet."""
+    `run_script` keys its record by the conversation id; a script tool by the conversation id, its
+    name, and a hash of its input (ADR 0005). A store treats the key as opaque.
+    """
+
+    async def get(self, key: str) -> Record | None:
+        """Return the record under `key`, or `None` when there is none yet."""
         ...
 
-    async def put(self, conversation_id: str, record: Record) -> None:
-        """Store the record for a conversation, replacing any earlier one."""
+    async def put(self, key: str, record: Record) -> None:
+        """Store the record under `key`, replacing any earlier one."""
         ...
 
 
@@ -76,13 +80,13 @@ class InMemoryRecordStore:
     def __init__(self) -> None:
         self._records: dict[str, Record] = {}
 
-    async def get(self, conversation_id: str) -> Record | None:
-        """Return the record for a conversation, or `None`."""
-        return self._records.get(conversation_id)
+    async def get(self, key: str) -> Record | None:
+        """Return the record under `key`, or `None`."""
+        return self._records.get(key)
 
-    async def put(self, conversation_id: str, record: Record) -> None:
+    async def put(self, key: str, record: Record) -> None:
         """Store the record for a conversation."""
-        self._records[conversation_id] = record
+        self._records[key] = record
 
 
 def reusable_steps(plan: Plan, record: Record | None, input: Any = None) -> dict[str, StepRecord]:
