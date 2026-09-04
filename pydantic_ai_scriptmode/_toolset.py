@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import warnings
 from collections.abc import Sequence
@@ -225,6 +227,16 @@ class _Dispatcher:
         )
         return to_jsonable_python(result)
 
+    def metadata(self) -> dict[str, Any]:
+        """The nested parts, for the tool return's metadata."""
+        return {'tool_calls': self.calls, 'tool_returns': self.returns}
+
+
+def _script_tool_key(conversation_id: str, name: str, input: Any) -> str:
+    """Where a script tool's record lives: one per conversation, tool, and input (ADR 0005)."""
+    digest = hashlib.sha256(json.dumps(input, sort_keys=True, default=str).encode()).hexdigest()[:16]
+    return f'{conversation_id}/{name}/{digest}'
+
 
 @dataclass(kw_only=True)
 class _RunScriptTool(ToolsetTool[AgentDepsT]):
@@ -298,6 +310,7 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
             raise UserError(f"Tool name '{RUN_SCRIPT_TOOL_NAME}' is reserved for script mode. Rename your tool.")
 
         callable_defs, sanitized_to_original = self._fold(folded)
+        self._catalog_scripts(script_tools, wrapped_tools, callable_defs, sanitized_to_original)
         if self.dynamic_catalog:
             description = self._static_description() + '\n\n' + _CATALOG_IN_INSTRUCTIONS
             self._last_catalog = _catalog(callable_defs)
@@ -323,6 +336,25 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
             wrapped_tools={**wrapped_tools, **script_tools},
         )
         return result
+
+    def _catalog_scripts(
+        self,
+        script_tools: dict[str, _ScriptToolsetTool[AgentDepsT]],
+        wrapped_tools: dict[str, ToolsetTool[AgentDepsT]],
+        callable_defs: dict[str, ToolDefinition],
+        sanitized_to_original: dict[str, str],
+    ) -> None:
+        """Give each script tool its catalog: the folded wrapped tools plus the script tools declared before it."""
+        folded_wrapped = {
+            safe: td for safe, td in callable_defs.items() if sanitized_to_original.get(safe, safe) not in script_tools
+        }
+        folded_sanitized = {safe: name for safe, name in sanitized_to_original.items() if name not in script_tools}
+        earlier: dict[str, _ScriptToolsetTool[AgentDepsT]] = {}
+        for name, tool in script_tools.items():
+            tool.callable_defs = {**folded_wrapped, **{n: t.tool_def for n, t in earlier.items()}}
+            tool.sanitized_to_original = folded_sanitized
+            tool.tools = {**wrapped_tools, **earlier}
+            earlier[name] = tool
 
     def _script_tools(
         self, wrapped_tools: dict[str, ToolsetTool[AgentDepsT]]
@@ -381,20 +413,13 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
     async def call_tool(
         self, name: str, tool_args: dict[str, Any], ctx: RunContext[AgentDepsT], tool: ToolsetTool[AgentDepsT]
     ) -> Any:
-        """Compile, validate, and execute a script, or pass a native tool call through."""
+        """Compile, validate, and execute a script, run a script tool, or pass a native tool call through."""
+        if isinstance(tool, _ScriptToolsetTool):
+            return await self._call_script_tool(tool_args, ctx, tool)
         if not isinstance(tool, _RunScriptTool):
             return await self.wrapped.call_tool(name, tool_args, ctx, tool)
 
-        parent_tm = ctx.tool_manager
-        if parent_tm is None:
-            raise UserError(
-                'ScriptMode needs `ctx.tool_manager` to dispatch calls, and it is not set. Inside a Temporal '
-                'workflow, run `run_script` as an activity or use ScriptMode outside the workflow.'
-            )
-        tool_manager = ToolManager(
-            toolset=self.wrapped, root_capability=parent_tm.root_capability, ctx=ctx, tools=tool.wrapped_tools
-        )
-
+        tool_manager = self._nested_manager(ctx, tool.wrapped_tools)
         try:
             plan = compile_script(tool_args['script'])
         except CompileError as e:
@@ -405,45 +430,75 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
             raise ModelRetry(_render_issues('The script is not executable:', issues))
 
         dispatch = _Dispatcher(tool_manager, tool.sanitized_to_original, ctx.tool_call_id or 'pyd_ai_script_mode')
-        conversation_id = ctx.conversation_id
-        record = await self.record_store.get(conversation_id) if conversation_id is not None else None
+        outcome = await self._run(plan, dispatch, ctx, key=ctx.conversation_id, input=None)
+        if outcome.status == 'error':
+            raise ModelRetry(_execution_retry(plan, outcome))
+        return ToolReturn(
+            return_value={'status': outcome.status, 'output': outcome.output},
+            metadata={'script_mode': True, 'plan': plan.to_dict(), **dispatch.metadata()},
+        )
+
+    async def _call_script_tool(
+        self, tool_args: dict[str, Any], ctx: RunContext[AgentDepsT], tool: _ScriptToolsetTool[AgentDepsT]
+    ) -> Any:
+        """Run a saved plan with the call's arguments as `input`; the return value is the plan's output."""
+        script = tool.script
+        input = script.validate_input(tool_args)
+        tool_manager = self._nested_manager(ctx, tool.tools)
+        dispatch = _Dispatcher(tool_manager, tool.sanitized_to_original, ctx.tool_call_id or script.name)
+        key = None if ctx.conversation_id is None else _script_tool_key(ctx.conversation_id, script.name, input)
+        outcome = await self._run(script.plan, dispatch, ctx, key=key, input=input)
+        if outcome.status == 'error':
+            raise ModelRetry(f'`{script.name}` failed at step `{outcome.at}`: {outcome.error}')
+        return ToolReturn(
+            return_value=outcome.output,
+            metadata={'script_mode': True, 'script_tool': script.name, **dispatch.metadata()},
+        )
+
+    def _nested_manager(
+        self, ctx: RunContext[AgentDepsT], tools: dict[str, ToolsetTool[AgentDepsT]]
+    ) -> ToolManager[Any]:
+        """The manager a plan's calls go through; over this toolset, so a script tool in `tools` is reachable."""
+        parent_tm = ctx.tool_manager
+        if parent_tm is None:
+            raise UserError(
+                'ScriptMode needs `ctx.tool_manager` to dispatch calls, and it is not set. Inside a Temporal '
+                'workflow, run `run_script` as an activity or use ScriptMode outside the workflow.'
+            )
+        return ToolManager(toolset=self, root_capability=parent_tm.root_capability, ctx=ctx, tools=tools)
+
+    async def _run(
+        self, plan: Plan, dispatch: _Dispatcher, ctx: RunContext[AgentDepsT], *, key: str | None, input: Any
+    ) -> ExecuteResult:
+        """Execute `plan` against the record under `key`, save the record, and park on a suspension."""
+        record = await self.record_store.get(key) if key is not None else None
         # The approved re-run resumes from the record, not from `ctx.tool_call_metadata`: Pydantic AI
         # echoes metadata back only when the caller copies it into `DeferredToolResults`.
         resolutions: dict[str, Any] = {}
         if ctx.tool_call_approved:
             if record is None:
                 raise UserError(
-                    'run_script was approved, but the conversation has no record to resume from. The record '
+                    f'{ctx.tool_name} was approved, but there is no record to resume from. The record '
                     'store must be shared by the run that parked and the run that resumes; the default '
                     'InMemoryRecordStore lives in one process.'
                 )
             # Only what the approver was shown: the steps the parking run surfaced, not every parked
-            # entry the conversation record still holds (a step parked by a denied script stays parked
-            # and is asked again).
+            # entry the record still holds (a step parked by a denied script stays parked and is asked again).
             resolutions = {name: True for name in record.parked}
         outcome = await execute_plan(
-            plan, dispatch=dispatch, limits=self.limits, record=record, resolutions=resolutions
+            plan, dispatch=dispatch, limits=self.limits, record=record, input=input, resolutions=resolutions
         )
-        if conversation_id is not None:
-            await self.record_store.put(conversation_id, outcome.record)
-
-        if outcome.status == 'error':
-            raise ModelRetry(_execution_retry(plan, outcome))
+        if key is not None:
+            await self.record_store.put(key, outcome.record)
         if outcome.status == 'suspended':
-            if conversation_id is None:
+            if key is None:
                 raise UserError(
                     'A script call needs approval, but the run has no conversation id to keep the record under, '
                     'so it could not be resumed. Add a `HandleDeferredToolCalls` capability to resolve approvals '
                     'inline instead.'
                 )
             raise ApprovalRequired(metadata=_suspension_metadata(plan, outcome))
-        metadata = {
-            'script_mode': True,
-            'plan': plan.to_dict(),
-            'tool_calls': dispatch.calls,
-            'tool_returns': dispatch.returns,
-        }
-        return ToolReturn(return_value={'status': outcome.status, 'output': outcome.output}, metadata=metadata)
+        return outcome
 
     def _fold(self, tools: dict[str, ToolsetTool[AgentDepsT]]) -> tuple[dict[str, ToolDefinition], dict[str, str]]:
         callable_defs: dict[str, ToolDefinition] = {}

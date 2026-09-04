@@ -41,14 +41,18 @@ pytestmark = pytest.mark.anyio
 ISSUES = [{'number': 1, 'stale': True}, {'number': 2, 'stale': False}, {'number': 3, 'stale': True}]
 
 
-def build_agent(*scripts: str, extra: list[Any] | None = None, **kwargs: Any) -> tuple[Agent[None, str], list[str]]:
-    """An agent whose model replies to each request with the next script, then with the tool result as text."""
+def build_agent(
+    *scripts: str | ToolCallPart, extra: list[Any] | None = None, **kwargs: Any
+) -> tuple[Agent[None, str], list[str]]:
+    """An agent whose model replies to each request with the next script (or tool call), then with the result as text."""
     closed: list[str] = []
     remaining = list(scripts)
 
     async def model(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
         if remaining:
-            return ModelResponse(parts=[ToolCallPart(RUN_SCRIPT_TOOL_NAME, {'script': remaining.pop(0)})])
+            nxt = remaining.pop(0)
+            part = nxt if isinstance(nxt, ToolCallPart) else ToolCallPart(RUN_SCRIPT_TOOL_NAME, {'script': nxt})
+            return ModelResponse(parts=[part])
         last = messages[-1].parts[-1]
         assert isinstance(last, ToolReturnPart)
         return ModelResponse(parts=[TextPart(str(last.content))])
@@ -740,6 +744,10 @@ return {'closed': len(closed)}
 )
 
 
+def not_close_stale(ctx: RunContext[None], td: ToolDefinition) -> bool:
+    return td.name != 'close_stale'
+
+
 class TestScriptTools:
     async def test_a_script_tool_is_folded_into_the_catalog_by_default(self):
         agent, _ = build_agent(scripts=[CLOSE_STALE])
@@ -752,9 +760,6 @@ class TestScriptTools:
         assert '"""Close every stale issue in a repository"""' in description
 
     async def test_a_predicate_makes_a_script_tool_native(self):
-        def not_close_stale(ctx: RunContext[None], td: ToolDefinition) -> bool:
-            return td.name != 'close_stale'
-
         agent, _ = build_agent(scripts=[CLOSE_STALE], tools=not_close_stale)
         model = await describe(agent)
         assert model.last_model_request_parameters is not None
@@ -767,3 +772,20 @@ class TestScriptTools:
             'required': ['repo'],
         }
         assert 'close_stale' not in (defs[RUN_SCRIPT_TOOL_NAME].description or '')
+
+    async def test_a_native_call_runs_the_plan_with_the_arguments_as_input(self):
+        agent, closed = build_agent(
+            ToolCallPart('close_stale', {'repo': 'api'}), scripts=[CLOSE_STALE], tools=not_close_stale
+        )
+        result = await agent.run('go')
+        assert result.output == "{'closed': 2}"
+        assert closed == ['api#1', 'api#3']
+        part = result.all_messages()[2].parts[0]
+        assert isinstance(part, ToolReturnPart)
+        assert part.metadata['script_mode'] is True
+        assert part.metadata['script_tool'] == 'close_stale'
+        assert [c.tool_name for c in part.metadata['tool_calls'].values()] == [
+            'list_issues',
+            'close_issue',
+            'close_issue',
+        ]
