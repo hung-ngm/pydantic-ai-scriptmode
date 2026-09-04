@@ -423,7 +423,7 @@ Read first, in this order, and do not restate them in the ADR:
   hash, state, status, suspensions, resolutions, revision, timestamps, expiry) behind a four-call
   storage contract whose floor is `compareAndSet` on a revision, plus a scheduler. Ours stores a
   record per key with no revision; the ADR says which of those to take.
-- pydantic-ai has no store of its own to mirror; `pydantic_ai.durable_exec` is Temporal and DBOS
+- pydantic-ai has no store of its own to mirror; `pydantic_ai.durable_exec` is Temporal, DBOS, and Prefect
   integration, and the toolset's Temporal error already says `run_script` must be an activity.
 
 What the ADR (`docs/adr/0006-durable-record-store.md`, `status: proposed`, voice of `0002`) must
