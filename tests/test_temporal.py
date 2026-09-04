@@ -23,7 +23,11 @@ try:
     from temporalio.common import RetryPolicy
     from temporalio.testing import WorkflowEnvironment
     from temporalio.worker import Replayer, Worker
-    from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxRestrictions
+    from temporalio.worker.workflow_sandbox import (
+        RestrictedWorkflowAccessError,
+        SandboxedWorkflowRunner,
+        SandboxRestrictions,
+    )
     from temporalio.workflow import ActivityConfig
 except ImportError:  # pragma: no cover
     pytest.skip('temporalio not installed', allow_module_level=True)
@@ -33,7 +37,7 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, T
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.toolsets.function import FunctionToolset
 
-from pydantic_ai_scriptmode import ScriptMode
+from pydantic_ai_scriptmode import ScriptMode, SQLiteRecordStore
 
 pytestmark = pytest.mark.anyio
 
@@ -146,6 +150,19 @@ class ScriptModeWorkflow:
 
 
 @workflow.defn
+class SQLiteStoreWorkflow:
+    """Pins the README's warning: the SQLite store's thread is refused workflow-side, at construction."""
+
+    @workflow.run
+    async def run(self) -> str:
+        try:
+            SQLiteRecordStore(':memory:')
+        except RestrictedWorkflowAccessError as e:
+            return e.qualified_name
+        return 'the store was built'  # pragma: no cover
+
+
+@workflow.defn
 class RetryingWorkflow:
     @workflow.run
     async def run(self, prompt: str) -> dict[str, Any]:
@@ -246,3 +263,19 @@ async def test_record_reuse_inside_a_temporal_workflow(client: Client) -> None:
         workflows=[RetryingWorkflow], plugins=[PydanticAIPlugin()], workflow_runner=_workflow_runner()
     ).replay_workflow(history)
     assert replay.replay_failure is None
+
+
+async def test_sqlite_store_is_refused_workflow_side(client: Client) -> None:
+    async with Worker(
+        client,
+        task_queue=TASK_QUEUE,
+        workflows=[SQLiteStoreWorkflow],
+        workflow_runner=_workflow_runner(),
+    ):
+        refused = await client.execute_workflow(
+            SQLiteStoreWorkflow.run,
+            id='scriptmode_temporal_sqlite',
+            task_queue=TASK_QUEUE,
+            execution_timeout=timedelta(seconds=30),
+        )
+    assert refused == 'concurrent.futures.ThreadPoolExecutor.__call__'
