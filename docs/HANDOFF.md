@@ -1,4 +1,4 @@
-# Handoff: pydantic-ai-scriptmode (script tools done, trialled, reviewed, and pushed; next is backlog item 4)
+# Handoff: pydantic-ai-scriptmode (durable record store done, reviewed, and pushed; next is backlog item 5)
 
 Date: 2026-09-04
 Workspace: `/Users/hungng/Documents/AI/experiments/pydantic-experiments/`
@@ -8,11 +8,20 @@ session; do not write handoff copies elsewhere (no temp-directory copies, no pro
 
 ## Where things stand
 
-Backlog item 3, script tools (ADR 0005), is built by TDD, trialled against a real model twice,
-reviewed, committed, and pushed. `make all` (ruff format, ruff check, pyright strict, pytest) is
-green: 210 passed, no xfails, no skips. `git log` on `main`, newest first (handoff-only commits
-omitted):
+Backlog item 4, durable `RecordStore` (ADR 0006), is built by TDD, reviewed, committed, and
+pushed. `make all` (ruff format, ruff check, pyright strict, pytest) is green: 231 passed, no
+xfails, no skips. `git log` on `main`, newest first (handoff-only commits omitted):
 
+- `7bc363e` Review fixes: the store owns one thread and one connection opened by the first statement, `close()` drains the queue; `INSERT OR REPLACE`; `updated_at` in SQLite's own text form
+- `68d357a` Review fix: a script tool that completed from no record writes none, since the next call would discard it
+- `2d07f99` Review fix: `from_dict` requires exactly the keys `to_dict` writes, since every field has a default and a dropped key loaded as a clean record
+- `84e079c` ADR 0006: the lock is a threading lock in the worker thread (superseded by `7bc363e`)
+- `b260953` Review fix: the store's lock is a `threading.Lock` taken in the worker thread (superseded by `7bc363e`)
+- `692419b` README documents `SQLiteRecordStore`; the no-record error names it; ADR 0006 accepted
+- `33d311d` End-to-end: a run parked in one agent resumes in another that shares only the SQLite file, for `run_script` and for a script tool
+- `38b20f1` `SQLiteRecordStore`: one table on one held connection, statements in a thread under a lock; `':memory:'` works and a new store reads the file
+- `3d3634d` `Record.to_dict` and `from_dict` round-trip a record through a JSON-safe object; the README store example uses them
+- `879088f` ADR 0006 (proposed): durable record store, with Key in the glossary
 - `23d2b06` Review fixes: a saved script over a tool that exists but is not available yet hides its script tool with a warning instead of failing the agent; JSON-schema parameters check the shape and `required` keys
 - `29396ba` Review fix: a completed script tool call is not replayed from its record; only a failed or parked one resumes
 - `ae4a65a` Review fix: the model's catalog folds only selected tools again; saved scripts see a quiet fold of every eligible tool, and an ambiguous or clashing name is a `UserError`
@@ -79,11 +88,22 @@ the Logfire hunks remain unstaged. One review finding is for the user, not this 
 `logfire auth` or a token raises or prompts before `main()`; `send_to_logfire='if-token-present'`
 (and `console=False` to keep the printed trace clean) would fix it.
 
-Steps 1 to 4 are done. Backlog items 0 to 3 are done. The next item is 4, a durable
-`RecordStore`, which starts with an ADR.
+Steps 1 to 4 are done. Backlog items 0 to 4 are done. The next item is 5, a JS surface, which
+starts with an ADR; see "Next session".
 
 Session history, newest first:
 
+- 2026-09-04 (third part): backlog item 4. Read `_record.py`, `_toolset.py::_run`, and callscript's
+  `durable.ts`; the finding that shaped the ADR is that a fresh `sqlite3` connection to `':memory:'`
+  is a fresh database, so the store holds one connection for its life and serialises statements with
+  a lock and `asyncio.to_thread`. Wrote ADR 0006, grilled it in two rounds (nine questions, then
+  five on what hangs off SQLite; the user took every recommendation), built by TDD in four commits.
+  The end-to-end test passed with no adapter change, since `_run` already read and wrote through the
+  protocol. No trial: no model-facing copy changed and the test goes through the real
+  `DeferredToolResults` path. `code-review` at `medium` hit the session limit on the first try and
+  completed on the retry: ten findings, six fixed in four commits (one, the lock, was fixed by
+  hand before the review returned and then superseded by its design finding), the rest accepted.
+  See "Review findings". Then this file.
 - 2026-09-04 (second part): backlog item 3. Read callscript's `engine.tool` (`engine.ts`, tested in
   `script-tool.test.ts`) and pydantic-ai's `ToolManager`; the finding that shaped the ADR is that
   `_raw_execute` dispatches through the manager's own toolset, so a saved script can reach folded
@@ -146,9 +166,10 @@ rest accepted or the user's. See "Review findings". Then this file.
 Read these first, in order. Do not restate them here.
 
 - `README.md`: usage, "How it works", grammar table, options, retry messages.
-- `CONTEXT.md`: glossary (18 terms). Use these words in code, docs, tests, and this file.
-- `docs/adr/0001-*.md` to `0004-*.md`: why inert plan, why Python surface, why the catalog can
-  move into instructions, why a parked call resumes from the record.
+- `CONTEXT.md`: glossary (19 terms). Use these words in code, docs, tests, and this file.
+- `docs/adr/0001-*.md` to `0006-*.md`: why inert plan, why Python surface, why the catalog can
+  move into instructions, why a parked call resumes from the record, why a saved script is a tool
+  served by the toolset, why the package serializes the record and ships a SQLite store.
 - Project memory `~/.claude/projects/-Users-hungng-Documents-AI-experiments-pydantic-experiments/memory/scriptmode-project.md`
   (loaded automatically via `MEMORY.md`).
 
@@ -164,7 +185,8 @@ what it owns.
 | `_plan.py` | `CallStep`, `DeriveStep`, `GuardStep`, `Plan`, `Limits`, `step_hash` | via compile tests |
 | `_compile.py` | `compile_script` -> `Plan` or `CompileError` (all issues at once) | `tests/test_compile.py` |
 | `_validate.py` | `validate_plan`, `ToolSignature` | `tests/test_validate.py` |
-| `_record.py` | `Record` (with `input`), `StepRecord`, `ItemRecord`, `RecordStore` protocol (keyed by a string), `InMemoryRecordStore`, `reusable_steps`, `parked_steps` | `tests/test_execute.py::TestRecordReuse`, `::TestSuspend` |
+| `_record.py` | `Record` (with `input`, `to_dict`, `from_dict`), `StepRecord`, `ItemRecord`, `RecordStore` protocol (keyed by a string), `InMemoryRecordStore`, `reusable_steps`, `parked_steps` | `tests/test_record.py`, `tests/test_execute.py::TestRecordReuse`, `::TestSuspend` |
+| `_stores.py` | `SQLiteRecordStore(path, timeout=)`: one table, one held connection, `close()` | `tests/test_stores.py`, `tests/test_script_mode.py::TestDurableResume` |
 | `_script_tool.py` | `ScriptTool`: a saved script compiled at construction, its parameter and return schemas, `validate_input`, the `input.<field>` check | `tests/test_script_tool.py` |
 | `_execute.py` | `Runner` (with `schedule`), `execute_plan`, `CallError`, `Suspend`, `Dispatch` | `tests/test_execute.py` |
 | `_toolset.py` | `ScriptModeToolset(WrapperToolset)`, `run_script` description, catalog stash and `get_instructions`, dispatch, script tools served and run (`_ScriptToolsetTool`, `_call_script_tool`, `_run`) | `tests/test_script_mode.py` (`::TestScriptTools`, `::TestScriptToolSuspension`) |
@@ -257,6 +279,23 @@ the scheduler answer key and swap helper from the learning phase are redundant a
 - `_discovered_names` validates the search return leniently with two private `TypedDict`s, as the
   harness does: a malformed entry is skipped, a malformed catalog yields no names. The public
   `ToolSearchReturnContent` type would drop every name on one bad entry.
+- `Record.to_dict` is `asdict` through `to_jsonable_python`, so a store never sees a `datetime`,
+  tuple, or set (a custom `Dispatch` may settle one); a tuple comes back as a list. `from_dict` is
+  strict by construction (`cls(**data)` raises `TypeError` on an unknown key). The shared fixture
+  `parked_script_tool_record` in `tests/conftest.py` sets every field to a non-default; pyright
+  strict refuses `from tests.test_x import ...`, so shared test data goes in `conftest.py`.
+- `SQLiteRecordStore` owns a one-worker `ThreadPoolExecutor` and one connection opened by the
+  first statement on that thread; `get`/`put` are `run_in_executor` calls and `close()` submits the
+  connection close then `shutdown(wait=True)`. A connection per call would make `':memory:'` a
+  fresh database every call; `asyncio.to_thread` plus a lock (the first cut) let `close()` run
+  under a live statement, which segfaulted (the close-race test in `tests/test_stores.py` crashed
+  the interpreter on the old code). `updated_at` is written by SQLite (`strftime(..., 'now')`), not
+  Python, so it compares with `datetime('now', ...)`. `INSERT OR REPLACE`, not `ON CONFLICT`
+  (SQLite 3.24). No WAL pragma. The test suite treats `ResourceWarning` as an error, so every
+  store a test opens must be closed (the `store` fixture in `tests/test_stores.py` does it).
+- `_run` skips the `put` for a script tool that completed from no record (`fresh_script_tool`),
+  since the next call discards a completed record anyway; a failed, parked, or pre-existing record
+  is still written. `SpyStore` in `tests/test_script_mode.py` pins it.
 - Suspension (ADR 0004). A parked step is in `settled` with status `suspended` but `Runner.bound`
   says it binds nothing, so its dependents and any guard after it never become ready; `schedule`
   returns instead of raising `PlanExecutionError` when pending steps remain and something is parked.
@@ -276,6 +315,26 @@ the scheduler answer key and swap helper from the learning phase are redundant a
   steps; it never reads `ctx.tool_call_metadata`. `CallDeferred` is still a `UserError`.
 
 ## Review findings (step 2, done 2026-09-03)
+
+Durable store review (2026-09-04, `code-review` at `medium`, twelve verifiers, ten findings).
+Fixed: `close()` closed the connection under a running `to_thread` statement, a reproducible
+segfault or a lost parked record; the constructor opened the file and ran the DDL on the loop
+with the busy timeout in force; a fan-out of `put`s parked one default-executor thread per caller
+(`7bc363e`: the store owns one thread, opens lazily on it, and `close()` drains it); `ON CONFLICT`
+needs SQLite 3.24 (`7bc363e`: `INSERT OR REPLACE`); `updated_at` in Python `isoformat()` did not
+compare with SQLite's `datetime()` (`7bc363e`: written by SQLite in its own form; README prune
+query fixed); `from_dict` was strict on unknown keys only, and every field has a default, so a
+dropped key loaded as a clean record (`2d07f99`); a completed script tool's record was written and
+never read (`68d357a`); the ADR claimed `to_dict` on the nested classes and two `UserError`s naming
+the store (ADR corrected with the copy). Accepted, below.
+
+- Non-string dict keys become strings through JSON, so a derivation's dict keyed by integers
+  resumes with string keys under SQLite and integer keys in memory. The engine-level fix
+  (JSON-shaping values in `Runner.settle`) would change first-run semantics for every user; the
+  README and ADR say so instead. Revisit if a trial hits it.
+- A `put` that fails after the tools ran (busy timeout, network filesystem) loses the outcome and
+  the approval; the run fails and the model's next script re-runs the side effects. Infrastructure
+  failure with no store to carry the outcome; the ADR names it.
 
 Script tools review (2026-09-04, `code-review` at `medium`, three angle agents, seventeen
 candidates verified by hand). Fixed: `input_fields` skipped the `return` expression and counted
@@ -386,22 +445,25 @@ Known and accepted:
 
 ## Next session: start here
 
-1. `cd pydantic-ai-scriptmode && git pull && uv sync --all-groups && make all`. Expect 210 passed.
+1. `cd pydantic-ai-scriptmode && git pull && uv sync --all-groups && make all`. Expect 227 passed.
    `git status` will show the user's uncommitted Logfire work (see above); leave it. To commit a
    change to `examples/tutor.py` without those hunks, apply the change to a copy of
    `git show HEAD:examples/tutor.py`, `git hash-object -w` the copy, and
    `git update-index --cacheinfo 100644,<sha>,examples/tutor.py`, as this session did.
-2. Backlog item 4, durable `RecordStore` (file or SQLite). ADR first
-   (`docs/adr/0006-durable-record-store.md`), grill it, code only after the user's yes. Read
-   callscript's `durable.ts` first. The record is plain data (`Record.input` included) and the
-   README's Redis example shows the shape; decide file against SQLite, the key layout (a script
-   tool's key has slashes), and whether the store ships in this package or as an extra.
+2. Backlog item 5, a JS surface: a second front end compiling to the same `Plan`. ADR first
+   (`docs/adr/0007-js-surface.md`), grill it, code only after the user's yes. ADR 0002 rejected a
+   JS surface for v1 (no maintained JS parser in Python; a second dialect next to `CodeMode`), so
+   the ADR must answer that first: whether the case has changed, which parser (a hand-written
+   parser for the subset, or none), and whether `run_script` grows a `language` argument or a second
+   tool. Read callscript's `validate.ts` and `types.ts` for the grammar it accepts, and
+   `_compile.py` for what a front end must produce (`Plan`, `bounds`, `step_hash` inputs). It is
+   also fair to recommend against the item, since 0002's reasons still hold; the user decides.
 3. Process rule: gate every commit on `make all` succeeding
    (`make all > log && echo MAKE_OK || exit 1`, then `git commit`). Never chain a commit after a
    grep of the output. Run `code-review` at `medium`; if it hits the rate limit, verify its
    candidate list by hand.
 
-### Plan for item 4: durable `RecordStore` (next)
+### Plan for item 4: durable `RecordStore` (done 2026-09-04; kept for the record)
 
 Goal, in glossary terms: a record survives the process. Today `InMemoryRecordStore` is a dict, so a
 run that parks in one process cannot resume in another, and two `UserError`s in `_toolset.py` say
@@ -666,7 +728,8 @@ steps 2 and 3: the commits use only glossary terms (dispatch, fan-out, item, rec
 teaching copy); the example's own nouns (topic, mastery, exercise) are domain data, not engine
 vocabulary. No change needed. Checked after item 1: added **Discovery** and **Announcement**; the diff's
 "revealed" became "discovered" everywhere (`8afc7e1`). Item 3 added **Script tool** and **Input**
-(`ef394a3`); the code says "script tool", never macro or saved plan.
+(`ef394a3`); the code says "script tool", never macro or saved plan. Item 4 added **Key**
+(`879088f`); the store is named for its backend, and "durable" appears only in the ADR title.
 
 ### 5. Deferred backlog
 
@@ -680,8 +743,7 @@ then `mattpocock-skills:tdd` for the code. One commit for the ADR, then commits 
 2. Suspend and detach: built 2026-09-03 (`3a0fc05` onward), ADR 0004. Trial and review outstanding;
    see "Next session".
 3. Script tools: done 2026-09-04 (`ef394a3` to `abdd7fb`), ADR 0005.
-4. Durable `RecordStore`: file or SQLite; the protocol already supports it (README example).
-   Now cheap to do safely because records can no longer hold closures.
+4. Durable `RecordStore`: done 2026-09-04 (`879088f` to `692419b`), ADR 0006.
 5. JS surface: a second front end compiling to the same `Plan`.
 6. Upstreaming to `pydantic-ai-harness`: follow `agent_docs/capability-authoring.md` there.
 
@@ -710,11 +772,11 @@ Call these with the Skill tool at the step named.
 
 - `mattpocock-skills:writing-for-agents`: when editing the `run_script` description, the
   announcement sentence, or the teaching copy; all are agent-facing prose.
-- `mattpocock-skills:domain-modeling`: step 4, and before any ADR in step 5. ADR 0006 will need
-  no new noun if the store is named for its backend; check whether "key" deserves a glossary
-  entry (today it is implementation vocabulary, not domain).
-- `mattpocock-skills:grilling`: on ADR 0006 before the user's yes, as on 0004 and 0005; the store
-  backend and the key layout each have more than one defensible answer.
+- `mattpocock-skills:domain-modeling`: step 4, and before any ADR in step 5. ADR 0006 added
+  **Key**; ADR 0007 will need **Surface** or similar if a second language lands (today "surface"
+  is used in ADR 0002 but not in the glossary).
+- `mattpocock-skills:grilling`: on every ADR before the user's yes, as on 0004 to 0006. Two
+  rounds worked for 0006: the frontier first, then what hung off the backend choice.
 - `mattpocock-skills:tdd`: any engine behaviour change from step 3 or 5.
 - `code-review` (or `mattpocock-skills:code-review`): before pushing a step 5 change. Run it at
   `medium`, not `high`: the `high` multi-agent run exhausted the session limit last time.

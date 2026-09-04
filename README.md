@@ -223,11 +223,14 @@ store = SQLiteRecordStore('records.sqlite')
 agent = Agent(..., capabilities=[ScriptMode(record_store=store)])
 ```
 
-`':memory:'` gives a store that lives with the instance, for tests. `put` is last-write-wins and
-there is no `delete`; the table is `records(key, record, updated_at)` with `updated_at` in ISO 8601
-UTC, so a host prunes with `DELETE FROM records WHERE updated_at < ?`. A writer in another process
-is waited for `timeout` seconds (default 5), then `sqlite3.OperationalError` escapes. `close()`
-releases the connection.
+`':memory:'` gives a store that lives with the instance, for tests. The store runs every statement on
+its own thread and opens the file on the first one. `put` is last-write-wins and there is no
+`delete`; the table is `records(key, record, updated_at)` with `updated_at` in SQLite's own UTC text
+form, so a host prunes with `DELETE FROM records WHERE updated_at < datetime('now', '-7 days')`. A
+writer in another process is waited for `timeout` seconds (default 5), then
+`sqlite3.OperationalError` escapes from the call. `close()` finishes the queued statements and
+releases the connection. One difference from the in-memory store: values go through JSON, so a
+dict a derivation keyed by integers comes back keyed by strings on a resume.
 
 A store has two async methods keyed by a string: the conversation id for `run_script`, and the
 conversation id, tool name, and input hash for a script tool. `Record.to_dict()` is a JSON-safe
