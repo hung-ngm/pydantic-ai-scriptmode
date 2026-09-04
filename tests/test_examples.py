@@ -47,7 +47,7 @@ def script_model(*scripts: str) -> FunctionModel:
 
 
 def test_examples_present():
-    assert [path.name for path in EXAMPLE_FILES] == ['approval.py', 'basic.py', 'engine.py']
+    assert [path.name for path in EXAMPLE_FILES] == ['approval.py', 'basic.py', 'engine.py', 'script_tool.py']
 
 
 @pytest.mark.parametrize('path', EXAMPLE_FILES, ids=lambda p: p.stem)
@@ -130,3 +130,19 @@ async def test_engine_reports_a_validation_issue():
     engine = load('engine')
     with pytest.raises(ValueError, match='get_forecast'):
         await engine.run('x = await get_forecast(city=1)\nreturn x')
+
+
+async def test_script_tool_runs_the_saved_sweep_from_a_script():
+    script_tool = load('script_tool')
+    agent = script_tool.build_agent(
+        model=script_model(
+            """
+# Run the restock sweep at 20 units
+orders = await restock_low(threshold=20)
+return orders
+"""
+        )
+    )
+    result = await agent.run(script_tool.PROMPT)
+    assert script_tool.ORDERS == [('mug-01', 50), ('cap-01', 40)]
+    assert "'ordered 50 of mug-01'" in result.output
