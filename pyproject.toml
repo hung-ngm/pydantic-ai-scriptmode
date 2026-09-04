@@ -45,6 +45,11 @@ examples = [
     'pydantic-ai-slim[anthropic]>=2.36.0',
     'python-dotenv>=1.0',
 ]
+# Not a default group: `temporalio` downloads a dev server on first use and `dbos` pulls SQLAlchemy.
+# `make durability` installs it; `tests/test_temporal.py` and `tests/test_dbos.py` skip without it.
+durability = [
+    'pydantic-ai-slim[temporal,dbos]>=2.36.0',
+]
 
 [tool.uv]
 # Every sync installs every group, so `uv run` for the example never prunes the linters.
