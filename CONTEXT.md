@@ -97,3 +97,7 @@ _Avoid_: macro, saved plan, compiled tool, mounted tool, subroutine
 **Input**:
 The per-call data a plan reads as `input`: a script tool's arguments, nothing for `run_script`. A step that reads it is never reused.
 _Avoid_: variables, arguments (those belong to a call), parameters (the declared schema)
+
+**Key**:
+The string a record is stored under: the conversation id for `run_script`; the conversation id, tool name, and a digest of the input for a script tool. A store treats it as opaque.
+_Avoid_: id, run id, session id, record id
