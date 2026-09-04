@@ -39,7 +39,7 @@ What is built and tested (package `pydantic-ai-scriptmode`, source
   record.
 - Composition tests under `TemporalDurability` (engine workflow-side, folded calls as activities,
   clean replay, record reuse across a retry inside one workflow) and `DBOSDurability`.
-- 234 tests, pyright strict, 100% of the grammar table exercised.
+- 235 tests, pyright strict, 100% of the grammar table exercised.
 
 Trial against plain tools, same model (`anthropic:claude-opus-5`), same four tools, one run each,
 not a benchmark:

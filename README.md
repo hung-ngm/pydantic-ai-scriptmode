@@ -273,9 +273,10 @@ deterministic, and every folded call goes through the wrapped toolset, so it is 
 history replays. The record then lives in the workflow: keep the default `InMemoryRecordStore`, since
 replay rebuilds it from the activity results and the history is the durable copy. Do not hand a
 `SQLiteRecordStore` to an agent that runs inside a Temporal workflow; it builds a thread pool, which
-the workflow sandbox refuses at construction. Under `DBOSDurability` the agent runs in the workflow function
-and the model requests are journaled as steps; any store works there. `tests/test_temporal.py` and
-`tests/test_dbos.py` are the composition tests (`make durability` installs their group).
+the workflow sandbox refuses at construction. Under `DBOSDurability` the agent runs in the workflow
+function and the model requests are journaled as steps; any store works there.
+`tests/test_temporal.py` and `tests/test_dbos.py` are the composition tests (`make durability`
+installs their group).
 
 ## What the model sees on failure
 
