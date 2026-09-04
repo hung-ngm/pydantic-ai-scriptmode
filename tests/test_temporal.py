@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover
     pytest.skip('temporalio not installed', allow_module_level=True)
 
 from pydantic_ai import Agent
-from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.messages import ModelRequest, ModelResponse, RetryPromptPart, TextPart, ToolCallPart, ToolReturnPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.toolsets.function import FunctionToolset
 
@@ -44,6 +44,8 @@ ACTIVITY_CONFIG = ActivityConfig(
     retry_policy=RetryPolicy(maximum_attempts=1),
 )
 SCRIPT = '# Add two numbers\nresult = await add(a=3, b=4)\nreturn result'
+FAILING_SCRIPT = '# Add then double\nresult = await add(a=3, b=4)\ndoubled = await boom(n=result)\nreturn doubled'
+CORRECTED_SCRIPT = '# Add then double\nresult = await add(a=3, b=4)\ndoubled = await twice(n=result)\nreturn doubled'
 
 
 def _workflow_runner() -> SandboxedWorkflowRunner:
@@ -79,6 +81,16 @@ def add(a: int, b: int) -> int:
     return a + b
 
 
+def twice(n: int) -> int:
+    """Double a number."""
+    return n * 2
+
+
+def boom(n: int) -> int:
+    """Fail every time."""
+    raise RuntimeError('boom')
+
+
 def _script_model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
     for msg in messages:
         if isinstance(msg, ModelRequest):
@@ -89,10 +101,38 @@ def _script_model(messages: list[ModelRequest | ModelResponse], info: AgentInfo)
     return ModelResponse(parts=[ToolCallPart(tool_name='run_script', args={'script': SCRIPT}, tool_call_id='tc_1')])
 
 
+def _retrying_model(messages: list[ModelRequest | ModelResponse], info: AgentInfo) -> ModelResponse:
+    """A script naming an unknown tool, then the corrected script, then the summary."""
+    returns = [
+        part
+        for msg in messages
+        if isinstance(msg, ModelRequest)
+        for part in msg.parts
+        if isinstance(part, (ToolReturnPart, RetryPromptPart)) and part.tool_name == 'run_script'
+    ]
+    if not returns:
+        return ModelResponse(
+            parts=[ToolCallPart(tool_name='run_script', args={'script': FAILING_SCRIPT}, tool_call_id='tc_1')]
+        )
+    if isinstance(returns[-1], RetryPromptPart):
+        return ModelResponse(
+            parts=[ToolCallPart(tool_name='run_script', args={'script': CORRECTED_SCRIPT}, tool_call_id='tc_2')]
+        )
+    content: Any = returns[-1].content
+    return ModelResponse(parts=[TextPart(content=f'done: {content["output"]}')])
+
+
 script_agent = Agent(
     FunctionModel(_script_model),
     name='script_mode_temporal_agent',
     toolsets=[FunctionToolset(tools=[add], id='math')],
+    capabilities=[ScriptMode(), TemporalDurability(activity_config=ACTIVITY_CONFIG)],
+)
+
+retrying_agent = Agent(
+    FunctionModel(_retrying_model),
+    name='script_mode_retry_agent',
+    toolsets=[FunctionToolset(tools=[add, twice, boom], id='math')],
     capabilities=[ScriptMode(), TemporalDurability(activity_config=ACTIVITY_CONFIG)],
 )
 
@@ -102,6 +142,14 @@ class ScriptModeWorkflow:
     @workflow.run
     async def run(self, prompt: str) -> dict[str, Any]:
         result = await script_agent.run(prompt)
+        return {'output': str(result.output), 'messages': result.all_messages_json().decode()}
+
+
+@workflow.defn
+class RetryingWorkflow:
+    @workflow.run
+    async def run(self, prompt: str) -> dict[str, Any]:
+        result = await retrying_agent.run(prompt)
         return {'output': str(result.output), 'messages': result.all_messages_json().decode()}
 
 
@@ -147,5 +195,54 @@ async def test_script_mode_runs_in_temporal_workflow(client: Client) -> None:
 
     replay = await Replayer(
         workflows=[ScriptModeWorkflow], plugins=[PydanticAIPlugin()], workflow_runner=_workflow_runner()
+    ).replay_workflow(history)
+    assert replay.replay_failure is None
+
+
+async def test_record_reuse_inside_a_temporal_workflow(client: Client) -> None:
+    """The corrected script reuses the settled step: `add` is one activity across both scripts, and
+    the history replays, so the record rebuilt workflow-side matches what the first run did."""
+    workflow_id = 'scriptmode_temporal_retry'
+    async with Worker(
+        client,
+        task_queue=TASK_QUEUE,
+        workflows=[RetryingWorkflow],
+        plugins=[AgentPlugin(retrying_agent)],
+        workflow_runner=_workflow_runner(),
+    ):
+        result = await client.execute_workflow(
+            RetryingWorkflow.run,
+            args=['Add then double'],
+            id=workflow_id,
+            task_queue=TASK_QUEUE,
+            execution_timeout=timedelta(seconds=30),
+        )
+
+    assert result['output'] == 'done: 14'
+    messages = json.loads(result['messages'])
+    retry = messages[2]['parts'][0]
+    assert retry['part_kind'] == 'retry-prompt'
+    assert 'boom' in retry['content'] and 'result' in retry['content']
+    second_return = messages[4]['parts'][0]
+    assert second_return['content'] == {'status': 'done', 'output': 14}
+    assert [c['tool_name'] for c in second_return['metadata']['tool_calls'].values()] == ['twice']
+
+    history = await client.get_workflow_handle(workflow_id).fetch_history()
+    activities = [
+        e.activity_task_scheduled_event_attributes.activity_type.name
+        for e in history.events
+        if e.HasField('activity_task_scheduled_event_attributes')
+    ]
+    assert activities == [
+        'agent__script_mode_retry_agent__model_request',
+        'agent__script_mode_retry_agent__toolset__math__call_tool',  # add
+        'agent__script_mode_retry_agent__toolset__math__call_tool',  # boom
+        'agent__script_mode_retry_agent__model_request',
+        'agent__script_mode_retry_agent__toolset__math__call_tool',  # twice; add reused from the record
+        'agent__script_mode_retry_agent__model_request',
+    ]
+
+    replay = await Replayer(
+        workflows=[RetryingWorkflow], plugins=[PydanticAIPlugin()], workflow_runner=_workflow_runner()
     ).replay_workflow(history)
     assert replay.replay_failure is None
