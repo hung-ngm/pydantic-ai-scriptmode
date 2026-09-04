@@ -13,7 +13,7 @@ from pydantic_ai.messages import ModelMessage, ModelResponse, TextPart, ToolCall
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 
-from pydantic_ai_scriptmode import RUN_SCRIPT_TOOL_NAME
+from pydantic_ai_scriptmode import RUN_SCRIPT_TOOL_NAME, SQLiteRecordStore
 
 pytestmark = pytest.mark.anyio
 
@@ -47,11 +47,13 @@ def script_model(*scripts: str) -> FunctionModel:
 
 
 def test_examples_present():
-    assert [path.name for path in EXAMPLE_FILES] == ['basic.py']
+    assert [path.name for path in EXAMPLE_FILES] == ['approval.py', 'basic.py']
 
 
 @pytest.mark.parametrize('path', EXAMPLE_FILES, ids=lambda p: p.stem)
 def test_example_builds_agent(path: Path):
+    if path.stem == 'engine':
+        pytest.skip('no agent: the engine example runs without one')
     agent = load(path.stem).build_agent(model=TestModel())
     assert isinstance(agent, Agent)
 
@@ -74,3 +76,39 @@ return {'closed': len(closed)}
     result = await agent.run(basic.PROMPT)
     assert basic.CLOSED == [i.number for i in basic.ISSUES['api'] if i.stale]
     assert "'closed': 2" in result.output
+
+
+async def test_approval_parks_on_the_payments_and_the_approved_run_pays_only_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    approval = load('approval')
+    monkeypatch.setattr(approval, 'STATE_DIR', tmp_path)
+    model = script_model(
+        """
+# Pay the overdue invoices under 5000 from verified vendors
+invoices = await list_invoices()
+due = [i for i in invoices if i.overdue and i.amount < 5000]
+vendors = [await get_vendor(vendor_id=i.vendor_id) for i in due[:20]]
+verified = [i for i, v in zip(due, vendors) if v.verified]
+if len(verified) == 0:
+    return 'nothing to pay'
+paid = [await pay_invoice(invoice_id=i.id, amount=i.amount, _reason='overdue, verified vendor') for i in verified[:20]]
+return paid
+"""
+    )
+    store = SQLiteRecordStore(tmp_path / 'records.sqlite')
+    try:
+        # First process: the run parks, nothing is paid, and the resume material is on disk.
+        await approval.start(approval.build_agent(model=model, store=store))
+        assert approval.PAID == []
+        assert (tmp_path / 'messages.json').exists() and (tmp_path / 'requests.json').exists()
+        out = capsys.readouterr().out
+        assert "needs approval: pay_invoice {'invoice_id': 'inv-1', 'amount': 1200.0} (overdue, verified vendor)" in out
+        assert 'inv-5' in out and 'inv-2' not in out and 'inv-3' not in out
+        # Second process: a new agent on the same store pays the parked invoices and re-lists nothing.
+        await approval.resume(approval.build_agent(model=model, store=store))
+    finally:
+        store.close()
+    assert approval.PAID == [('inv-1', 1200.0), ('inv-5', 990.0)]
+    assert approval.CALLS == ['list_invoices', 'get_vendor', 'get_vendor', 'get_vendor', 'pay_invoice', 'pay_invoice']
+    assert 'paid inv-1: 1200.00' in capsys.readouterr().out

@@ -22,6 +22,7 @@ you then need that provider's key instead.
 | Example | Use case | What it shows | Needs a key |
 | --- | --- | --- | --- |
 | [`basic.py`](basic.py) | Issue triage | Two tools folded into `run_script`; one script lists, filters, guards on the empty case, and fans out the closes | yes |
+| [`approval.py`](approval.py) | Accounts payable | A tool that needs approval parks the run; the second invocation approves, and `SQLiteRecordStore` lets it resume from the record with only the payments dispatched again | yes |
 
 Every example exposes a `build_agent(model=...)` factory, which `tests/test_examples.py` uses to
 build it with a test model and to drive it with a fixed script, and a `main()` that runs one task.
