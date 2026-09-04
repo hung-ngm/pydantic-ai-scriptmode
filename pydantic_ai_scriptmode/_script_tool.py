@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import KW_ONLY, dataclass, field
 from typing import Any
 
@@ -16,6 +17,7 @@ from pydantic_ai_scriptmode._validate import input_fields
 JsonSchema = dict[str, Any]
 
 _NO_PARAMETERS: JsonSchema = {'type': 'object', 'properties': {}}
+_IDENTIFIER = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,10 @@ class ScriptTool:
     _adapter: TypeAdapter[Any] | None = field(init=False, default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
+        if not _IDENTIFIER.fullmatch(self.name):
+            raise ValueError(
+                f'script tool name {self.name!r} must be a Python identifier, since a script calls it by that name.'
+            )
         plan = compile_script(self.script)
         object.__setattr__(self, 'plan', plan)
         if self.description is None:

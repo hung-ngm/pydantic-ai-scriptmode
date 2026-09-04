@@ -748,8 +748,8 @@ def not_close_stale(ctx: RunContext[None], td: ToolDefinition) -> bool:
     return td.name != 'close_stale'
 
 
-def native_close_tools(ctx: RunContext[None], td: ToolDefinition) -> bool:
-    return not td.name.startswith('close_')
+def native_script_tools(ctx: RunContext[None], td: ToolDefinition) -> bool:
+    return td.name not in ('close_stale', 'close_missing')
 
 
 class TestScriptTools:
@@ -815,13 +815,14 @@ class TestScriptTools:
             'close_missing',
             '# Close an issue that is not there\nr = await close_issue(repo=input.repo, number=input.number)\nreturn r',
             parameters={'type': 'object', 'properties': {'repo': {'type': 'string'}, 'number': {'type': 'integer'}}},
+            returns=str,
         )
         agent, _ = build_agent(
             ToolCallPart('close_stale', {'repo': 3}),
             ToolCallPart('close_missing', {'repo': 'api', 'number': 'x'}),
             ToolCallPart('close_stale', {'repo': 'api'}),
             scripts=[CLOSE_STALE, failing],
-            tools=native_close_tools,
+            tools=native_script_tools,
         )
         result = await agent.run('go')
         messages = result.all_messages()
@@ -842,3 +843,41 @@ class TestScriptTools:
         agent, _ = build_agent(script, scripts=[CLOSE_STALE], limits=Limits(max_result_bytes=1))
         result = await agent.run('go')
         assert result.output.startswith("{'status': 'done', 'output': '`close_stale` failed at step `issues`:")
+
+    async def test_a_saved_script_naming_a_tool_the_fold_does_not_hold_is_a_user_error(self):
+        bad = ScriptTool('bad', '# Bad\nr = await archive(item_id=1)\nreturn r', returns=str)
+        agent, _ = build_agent(scripts=[bad])
+        with pytest.raises(UserError, match=r"(?s)Script tool 'bad' is not executable.*`archive`"):
+            await agent.run('go')
+
+    async def test_a_script_tool_calls_only_the_script_tools_declared_before_it(self):
+        count = ScriptTool(
+            'count_closed',
+            '# Count the stale issues closed\nr = await close_stale(repo=input.repo)\nreturn r.closed',
+            parameters=CloseStaleParams,
+            returns=int,
+        )
+        agent, closed = build_agent("n = await count_closed(repo='api')\nreturn n", scripts=[CLOSE_STALE, count])
+        result = await agent.run('go')
+        assert result.output == "{'status': 'done', 'output': 2}"
+        assert closed == ['api#1', 'api#3']
+        reversed_agent, _ = build_agent(scripts=[count, CLOSE_STALE])
+        with pytest.raises(UserError, match=r"(?s)Script tool 'count_closed' is not executable.*`close_stale`"):
+            await reversed_agent.run('go')
+
+    async def test_a_saved_script_may_call_a_wrapped_tool_the_selector_kept_native(self):
+        agent, closed = build_agent(ToolCallPart('close_stale', {'repo': 'api'}), scripts=[CLOSE_STALE], tools=[])
+        model = await describe(agent)
+        assert model.last_model_request_parameters is not None
+        names = sorted(t.name for t in model.last_model_request_parameters.function_tools)
+        assert names == ['close_issue', 'close_stale', 'list_issues', RUN_SCRIPT_TOOL_NAME]
+        result = await agent.run('go')
+        assert result.output == "{'closed': 2}"
+        assert closed == ['api#1', 'api#3']
+
+    async def test_a_script_tool_may_not_take_the_reserved_name_or_a_wrapped_tool_name(self):
+        for name in (RUN_SCRIPT_TOOL_NAME, 'close_issue'):
+            tool = ScriptTool(name, '# Nothing\nissues = await list_issues(repo="api")', returns=list[dict[str, Any]])
+            agent, _ = build_agent(scripts=[tool])
+            with pytest.raises(UserError, match=f"'{name}'"):
+                await agent.run('go')

@@ -289,8 +289,10 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
     async def get_tools(self, ctx: RunContext[AgentDepsT]) -> dict[str, ToolsetTool[AgentDepsT]]:
         """Return `run_script` plus the tools that stay native."""
         wrapped_tools = await self.wrapped.get_tools(ctx)
+        if RUN_SCRIPT_TOOL_NAME in wrapped_tools:
+            raise UserError(f"Tool name '{RUN_SCRIPT_TOOL_NAME}' is reserved for script mode. Rename your tool.")
         script_tools = self._script_tools(wrapped_tools)
-        folded: dict[str, ToolsetTool[AgentDepsT]] = {}
+        eligible: dict[str, ToolsetTool[AgentDepsT]] = {}
         native: dict[str, ToolsetTool[AgentDepsT]] = {}
         for name, tool in {**wrapped_tools, **script_tools}.items():
             td = tool.tool_def
@@ -301,16 +303,23 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
                 or _is_code_execution_tool(td)
             ):
                 native[name] = tool
-            elif await matches_tool_selector(self.tool_selector, ctx, td):
-                folded[name] = tool
+            else:
+                eligible[name] = tool
+
+        # Every eligible tool is rendered once; the selector then decides which the model's scripts may
+        # call. A saved script may call any eligible tool: the selector is the model's view, not the
+        # developer's.
+        eligible_defs, sanitized_to_original = self._fold(eligible)
+        folded: set[str] = set()
+        for name, tool in eligible.items():
+            if await matches_tool_selector(self.tool_selector, ctx, tool.tool_def):
+                folded.add(name)
             else:
                 native[name] = tool
-
-        if RUN_SCRIPT_TOOL_NAME in native:
-            raise UserError(f"Tool name '{RUN_SCRIPT_TOOL_NAME}' is reserved for script mode. Rename your tool.")
-
-        callable_defs, sanitized_to_original = self._fold(folded)
-        self._catalog_scripts(script_tools, wrapped_tools, callable_defs, sanitized_to_original)
+        callable_defs = {
+            safe: td for safe, td in eligible_defs.items() if sanitized_to_original.get(safe, safe) in folded
+        }
+        self._catalog_scripts(script_tools, wrapped_tools, eligible_defs, sanitized_to_original)
         if self.dynamic_catalog:
             description = self._static_description() + '\n\n' + _CATALOG_IN_INSTRUCTIONS
             self._last_catalog = _catalog(callable_defs)
@@ -341,20 +350,30 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
         self,
         script_tools: dict[str, _ScriptToolsetTool[AgentDepsT]],
         wrapped_tools: dict[str, ToolsetTool[AgentDepsT]],
-        callable_defs: dict[str, ToolDefinition],
+        eligible_defs: dict[str, ToolDefinition],
         sanitized_to_original: dict[str, str],
     ) -> None:
-        """Give each script tool its catalog: the folded wrapped tools plus the script tools declared before it."""
-        folded_wrapped = {
-            safe: td for safe, td in callable_defs.items() if sanitized_to_original.get(safe, safe) not in script_tools
+        """Give each script tool its catalog: every eligible wrapped tool plus the script tools declared before it."""
+        wrapped_defs = {
+            safe: td for safe, td in eligible_defs.items() if sanitized_to_original.get(safe, safe) not in script_tools
         }
-        folded_sanitized = {safe: name for safe, name in sanitized_to_original.items() if name not in script_tools}
+        wrapped_sanitized = {safe: name for safe, name in sanitized_to_original.items() if name not in script_tools}
         earlier: dict[str, _ScriptToolsetTool[AgentDepsT]] = {}
         for name, tool in script_tools.items():
-            tool.callable_defs = {**folded_wrapped, **{n: t.tool_def for n, t in earlier.items()}}
-            tool.sanitized_to_original = folded_sanitized
+            tool.callable_defs = {**wrapped_defs, **{n: t.tool_def for n, t in earlier.items()}}
+            tool.sanitized_to_original = wrapped_sanitized
             tool.tools = {**wrapped_tools, **earlier}
             earlier[name] = tool
+            signatures = {n: _signature_of(td) for n, td in tool.callable_defs.items()}
+            issues = validate_plan(tool.script.plan, tools=signatures, limits=self.limits)
+            if issues:
+                raise UserError(
+                    _render_issues(
+                        f"Script tool '{name}' is not executable against the agent's tools "
+                        '(every tool eligible for folding, and the script tools declared before it):',
+                        issues,
+                    )
+                )
 
     def _script_tools(
         self, wrapped_tools: dict[str, ToolsetTool[AgentDepsT]]
@@ -362,6 +381,8 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
         """One toolset tool per saved script, each validated against the fold and the scripts before it."""
         script_tools: dict[str, _ScriptToolsetTool[AgentDepsT]] = {}
         for script in self.scripts:
+            if script.name == RUN_SCRIPT_TOOL_NAME:
+                raise UserError(f"Script tool name '{RUN_SCRIPT_TOOL_NAME}' is reserved for script mode. Rename it.")
             if script.name in wrapped_tools or script.name in script_tools:
                 raise UserError(f"Script tool '{script.name}' has the same name as another tool. Rename one of them.")
             script_tools[script.name] = _ScriptToolsetTool(

@@ -73,8 +73,9 @@ class ScriptMode(AbstractCapability[AgentDepsT]):
 
     scripts: Sequence[ScriptTool] = ()
     """Saved scripts served as tools. Each goes through `tools` like any other tool, so by default it
-    is folded and appears in the catalog; a predicate can keep it native. A script tool may call the
-    folded tools and the script tools declared before it in this list."""
+    is folded and appears in the catalog; a predicate can keep it native. A saved script may call any
+    tool eligible for folding, whether or not `tools` folded it, and the script tools before it in
+    this list."""
 
     _announced_tools: set[str] = field(default_factory=set[str], init=False, repr=False)
 

@@ -77,3 +77,9 @@ class TestInputFields:
             ScriptTool('close_stale', script, parameters={'type': 'object', 'properties': {'name': {}}})
         ScriptTool('close_stale', script, parameters={'type': 'object', 'additionalProperties': True})
         ScriptTool('close_stale', script, parameters=dict[str, str])
+
+
+class TestName:
+    def test_the_name_must_be_callable_from_a_script_as_written(self):
+        with pytest.raises(ValueError, match=r"'close-stale'.*identifier"):
+            ScriptTool('close-stale', CLOSE_STALE, parameters=Params)

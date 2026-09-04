@@ -19,9 +19,12 @@ over the toolset itself with the wrapped tools and the script tools in its `tool
 `execute_plan(..., input=<the validated arguments>)`. The call's return value is the plan's output,
 whether the script reached its last line or a guard ended it. A script tool passes through the
 `tools` selector like every other tool, so with the default `'all'` it is folded and appears in the
-catalog next to the tools it composes, and one predicate makes it native. A script tool may call
-the script tools declared before it in the list, so composition is allowed and a cycle is
-impossible by construction.
+catalog next to the tools it composes, and one predicate makes it native. A saved script may call
+every wrapped tool that is eligible for folding, whether or not the selector folded it, since the
+selector is the model's view and the saved script is the developer's; the structural exclusions
+(framework tools, unavailable and `unless_native` tools, other code-execution tools) still apply.
+It may also call the script tools declared before it in the list, so composition is allowed and a
+cycle is impossible by construction.
 
 A script tool keeps its own record, keyed by conversation id, tool name, and a hash of its input,
 not the conversation's record that `run_script` uses. Sharing would need callscript's explicit
@@ -49,7 +52,7 @@ parameter is renamed and the README example changes, though every existing store
 since the key is still one string. The nested `ToolManager` for `run_script` is built over the
 `ScriptModeToolset` instead of the wrapped toolset, so `call_tool` routes script tools to itself
 and everything else onward; a test pins that a plain nested call still reaches the wrapped
-toolset. A script tool's catalog is computed per tool (the fold plus the earlier script tools),
+toolset. A script tool's catalog is computed per tool (the eligible tools plus the earlier script tools),
 so `get_tools` validates each saved plan every step; plans are small and the fold is already
 rebuilt every step, so this is cheap, but it is work on the hot path. `ScriptTool` is a new public
 class and `Plan` is not accepted as input: the text is what the message history holds and what the
