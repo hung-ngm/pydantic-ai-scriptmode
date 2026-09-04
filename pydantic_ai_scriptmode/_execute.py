@@ -339,7 +339,7 @@ class Runner:
     async def schedule(self) -> None:
         """Drive every pending step to settled, or stop at the first guard that fires or step that fails.
 
-        Event-driven: keep the steps in flight as tasks, wait for any one to settle, then start
+        Event-driven: keep the steps in flight as tasks, wake when any one settles, then start
         whatever that settlement made ready. A step never waits on an unrelated slow call.
 
         - Only `ready_steps()` may start. It already encodes data edges, `after` edges, and
@@ -356,20 +356,28 @@ class Runner:
           `PlanExecutionError` rather than return a partial record.
         """
         in_flight: dict[asyncio.Task[None], str] = {}
+        # One event for every settlement, rather than `asyncio.wait(FIRST_COMPLETED)`: the settled
+        # tasks are then read in launch order (dict order), where `wait` hands back a set whose
+        # iteration order is not deterministic. Temporal's workflow sandbox refuses `asyncio.wait`
+        # for that reason, and the engine runs workflow-side there (`tests/test_temporal.py`).
+        settled = asyncio.Event()
         try:
             while True:
                 if not self.halted:
                     running = set(in_flight.values())
                     for step in self.ready_steps():
                         if step.name not in running:
-                            in_flight[asyncio.create_task(self.run_step(step))] = step.name
+                            task = asyncio.create_task(self.run_step(step))
+                            task.add_done_callback(lambda _: settled.set())
+                            in_flight[task] = step.name
                 if not in_flight:
                     if self.pending and not self.halted and not self.suspensions:
                         names = [s.name for s in self.pending]
                         raise PlanExecutionError(f'no step is ready but {names} are pending')
                     return
-                done, _ = await asyncio.wait(in_flight, return_when=asyncio.FIRST_COMPLETED)
-                for task in done:
+                await settled.wait()
+                settled.clear()
+                for task in [t for t in in_flight if t.done()]:
                     del in_flight[task]
                     task.result()  # re-raise anything run_step let through
         finally:
