@@ -47,7 +47,7 @@ def script_model(*scripts: str) -> FunctionModel:
 
 
 def test_examples_present():
-    assert [path.name for path in EXAMPLE_FILES] == ['approval.py', 'basic.py']
+    assert [path.name for path in EXAMPLE_FILES] == ['approval.py', 'basic.py', 'engine.py']
 
 
 @pytest.mark.parametrize('path', EXAMPLE_FILES, ids=lambda p: p.stem)
@@ -112,3 +112,21 @@ return paid
     assert approval.PAID == [('inv-1', 1200.0), ('inv-5', 990.0)]
     assert approval.CALLS == ['list_invoices', 'get_vendor', 'get_vendor', 'get_vendor', 'pay_invoice', 'pay_invoice']
     assert 'paid inv-1: 1200.00' in capsys.readouterr().out
+
+
+async def test_engine_runs_the_script_without_an_agent():
+    engine = load('engine')
+    result = await engine.run()
+    assert result.status == 'done'
+    assert result.output == {'London': 'cloudy', 'Paris': 'sunny', 'Tokyo': 'sunny'}
+    assert [(name, step.status) for name, step in result.record.steps.items()] == [
+        ('cities', 'done'),
+        ('coords', 'done'),
+        ('reports', 'done'),
+    ]
+
+
+async def test_engine_reports_a_validation_issue():
+    engine = load('engine')
+    with pytest.raises(ValueError, match='get_forecast'):
+        await engine.run('x = await get_forecast(city=1)\nreturn x')

@@ -23,6 +23,8 @@ you then need that provider's key instead.
 | --- | --- | --- | --- |
 | [`basic.py`](basic.py) | Issue triage | Two tools folded into `run_script`; one script lists, filters, guards on the empty case, and fans out the closes | yes |
 | [`approval.py`](approval.py) | Accounts payable | A tool that needs approval parks the run; the second invocation approves, and `SQLiteRecordStore` lets it resume from the record with only the payments dispatched again | yes |
+| [`engine.py`](engine.py) | Weather lookup, no agent | `compile_script`, `validate_plan`, and `execute_plan` against plain async functions; the engine needs neither Pydantic AI's `Agent` nor a model | no |
 
-Every example exposes a `build_agent(model=...)` factory, which `tests/test_examples.py` uses to
-build it with a test model and to drive it with a fixed script, and a `main()` that runs one task.
+Every agent example exposes a `build_agent(model=...)` factory, which `tests/test_examples.py` uses
+to build it with a test model and to drive it with a fixed script, and a `main()` that runs one task.
+`engine.py` exposes `run(script)` instead.
