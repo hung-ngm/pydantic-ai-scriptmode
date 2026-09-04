@@ -16,13 +16,14 @@ from pydantic_ai.messages import InstructionPart, ToolCallPart, ToolReturn, Tool
 from pydantic_ai.tool_manager import ToolManager
 from pydantic_ai.tools import AgentDepsT, ToolDenied, ToolSelector, matches_tool_selector
 from pydantic_ai.toolsets.abstract import SchemaValidatorProt, ToolsetTool
-from pydantic_core import to_jsonable_python
+from pydantic_core import SchemaValidator, core_schema, to_jsonable_python
 from typing_extensions import TypedDict
 
 from pydantic_ai_scriptmode._compile import CompileError, compile_script
 from pydantic_ai_scriptmode._execute import CallError, ExecuteResult, Suspend, execute_plan
 from pydantic_ai_scriptmode._plan import CallStep, Limits, Plan
 from pydantic_ai_scriptmode._record import InMemoryRecordStore, RecordStore
+from pydantic_ai_scriptmode._script_tool import ScriptTool
 from pydantic_ai_scriptmode._teaching import Issue
 from pydantic_ai_scriptmode._validate import ToolSignature, validate_plan
 
@@ -234,6 +235,21 @@ class _RunScriptTool(ToolsetTool[AgentDepsT]):
     wrapped_tools: dict[str, ToolsetTool[AgentDepsT]]
 
 
+@dataclass(kw_only=True)
+class _ScriptToolsetTool(ToolsetTool[AgentDepsT]):
+    """A script tool served by the toolset, with the catalog its saved plan may call."""
+
+    script: ScriptTool
+    callable_defs: dict[str, ToolDefinition]
+    sanitized_to_original: dict[str, str]
+    tools: dict[str, ToolsetTool[AgentDepsT]]
+    """What the nested manager may dispatch to: the wrapped tools and the script tools declared earlier."""
+
+
+# Arguments reach `call_tool` as the model sent them; `ScriptTool.validate_input` validates them there.
+_ANY_ARGS_VALIDATOR = SchemaValidator(core_schema.any_schema())
+
+
 @dataclass
 class ScriptModeToolset(WrapperToolset[AgentDepsT]):
     """Implementation toolset for `ScriptMode`.
@@ -250,6 +266,8 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
     record_store: RecordStore = field(default_factory=InMemoryRecordStore)
     dynamic_catalog: bool = False
     """Keep the catalog out of the `run_script` description and surface it through `get_instructions`."""
+    scripts: Sequence[ScriptTool] = ()
+    """Saved scripts served as tools (ADR 0005), each callable by the script tools declared after it."""
 
     _warned_no_return_schema: set[str] = field(default_factory=set[str], init=False, repr=False)
     # The catalog stashed by `get_tools` and read back by `get_instructions` in the same step.
@@ -259,9 +277,10 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
     async def get_tools(self, ctx: RunContext[AgentDepsT]) -> dict[str, ToolsetTool[AgentDepsT]]:
         """Return `run_script` plus the tools that stay native."""
         wrapped_tools = await self.wrapped.get_tools(ctx)
+        script_tools = self._script_tools(wrapped_tools)
         folded: dict[str, ToolsetTool[AgentDepsT]] = {}
         native: dict[str, ToolsetTool[AgentDepsT]] = {}
-        for name, tool in wrapped_tools.items():
+        for name, tool in {**wrapped_tools, **script_tools}.items():
             td = tool.tool_def
             if (
                 td.tool_kind is not None
@@ -301,9 +320,35 @@ class ScriptModeToolset(WrapperToolset[AgentDepsT]):
             args_validator=_RUN_SCRIPT_ARGS_VALIDATOR,
             callable_defs=callable_defs,
             sanitized_to_original=sanitized_to_original,
-            wrapped_tools=wrapped_tools,
+            wrapped_tools={**wrapped_tools, **script_tools},
         )
         return result
+
+    def _script_tools(
+        self, wrapped_tools: dict[str, ToolsetTool[AgentDepsT]]
+    ) -> dict[str, _ScriptToolsetTool[AgentDepsT]]:
+        """One toolset tool per saved script, each validated against the fold and the scripts before it."""
+        script_tools: dict[str, _ScriptToolsetTool[AgentDepsT]] = {}
+        for script in self.scripts:
+            if script.name in wrapped_tools or script.name in script_tools:
+                raise UserError(f"Script tool '{script.name}' has the same name as another tool. Rename one of them.")
+            script_tools[script.name] = _ScriptToolsetTool(
+                toolset=self,
+                tool_def=ToolDefinition(
+                    name=script.name,
+                    description=script.description,
+                    parameters_json_schema=script.parameters_json_schema,
+                    return_schema=script.return_schema,
+                    metadata={'script_mode': True},
+                ),
+                max_retries=self.max_retries,
+                args_validator=_ANY_ARGS_VALIDATOR,
+                script=script,
+                callable_defs={},
+                sanitized_to_original={},
+                tools={},
+            )
+        return script_tools
 
     async def for_run_step(self, ctx: RunContext[AgentDepsT]) -> AbstractToolset[AgentDepsT]:
         """Rebuild around a changed wrapped toolset without losing the catalog stashed this step."""

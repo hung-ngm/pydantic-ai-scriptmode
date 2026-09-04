@@ -25,8 +25,16 @@ from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.toolsets.function import FunctionToolset
 from pydantic_ai.usage import RunUsage
+from typing_extensions import TypedDict
 
-from pydantic_ai_scriptmode import RUN_SCRIPT_TOOL_NAME, InMemoryRecordStore, Limits, ScriptMode, ScriptModeToolset
+from pydantic_ai_scriptmode import (
+    RUN_SCRIPT_TOOL_NAME,
+    InMemoryRecordStore,
+    Limits,
+    ScriptMode,
+    ScriptModeToolset,
+    ScriptTool,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -712,3 +720,50 @@ class TestDiscoveryAnnouncement:
         model = await describe(agent)
         assert model.last_model_request_parameters is not None
         assert 'search_tools' not in (model.last_model_request_parameters.function_tools[0].description or '')
+
+
+class CloseStaleParams(TypedDict):
+    repo: str
+
+
+CLOSE_STALE = ScriptTool(
+    'close_stale',
+    """
+# Close every stale issue in a repository
+issues = await list_issues(repo=input.repo)
+stale = [i for i in issues if i.stale]
+closed = [await close_issue(repo=input.repo, number=i.number) for i in stale[:20]]
+return {'closed': len(closed)}
+""",
+    parameters=CloseStaleParams,
+    returns=dict[str, int],
+)
+
+
+class TestScriptTools:
+    async def test_a_script_tool_is_folded_into_the_catalog_by_default(self):
+        agent, _ = build_agent(scripts=[CLOSE_STALE])
+        model = await describe(agent)
+        assert model.last_model_request_parameters is not None
+        defs = model.last_model_request_parameters.function_tools
+        assert [d.name for d in defs] == [RUN_SCRIPT_TOOL_NAME]
+        description = defs[0].description or ''
+        assert 'async def close_stale(*, repo: str) -> dict[str, int]:' in description
+        assert '"""Close every stale issue in a repository"""' in description
+
+    async def test_a_predicate_makes_a_script_tool_native(self):
+        def not_close_stale(ctx: RunContext[None], td: ToolDefinition) -> bool:
+            return td.name != 'close_stale'
+
+        agent, _ = build_agent(scripts=[CLOSE_STALE], tools=not_close_stale)
+        model = await describe(agent)
+        assert model.last_model_request_parameters is not None
+        defs = {d.name: d for d in model.last_model_request_parameters.function_tools}
+        assert set(defs) == {RUN_SCRIPT_TOOL_NAME, 'close_stale'}
+        assert defs['close_stale'].description == 'Close every stale issue in a repository'
+        assert defs['close_stale'].parameters_json_schema == {
+            'type': 'object',
+            'properties': {'repo': {'type': 'string'}},
+            'required': ['repo'],
+        }
+        assert 'close_stale' not in (defs[RUN_SCRIPT_TOOL_NAME].description or '')

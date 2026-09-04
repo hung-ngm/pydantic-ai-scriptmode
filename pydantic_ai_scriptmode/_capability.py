@@ -15,6 +15,7 @@ from typing_extensions import TypedDict
 
 from pydantic_ai_scriptmode._plan import Limits
 from pydantic_ai_scriptmode._record import InMemoryRecordStore, RecordStore
+from pydantic_ai_scriptmode._script_tool import ScriptTool
 from pydantic_ai_scriptmode._toolset import (  # pyright: ignore[reportPrivateUsage]
     ScriptModeToolset,
     sanitize_tool_name,
@@ -70,6 +71,11 @@ class ScriptMode(AbstractCapability[AgentDepsT]):
     record_store: RecordStore = field(default_factory=InMemoryRecordStore)
     """Where settled steps live between `run_script` calls, keyed by `conversation_id`."""
 
+    scripts: Sequence[ScriptTool] = ()
+    """Saved scripts served as tools. Each goes through `tools` like any other tool, so by default it
+    is folded and appears in the catalog; a predicate can keep it native. A script tool may call the
+    folded tools and the script tools declared before it in this list."""
+
     _announced_tools: set[str] = field(default_factory=set[str], init=False, repr=False)
 
     async def for_run(self, ctx: RunContext[AgentDepsT]) -> ScriptMode[AgentDepsT]:
@@ -91,6 +97,7 @@ class ScriptMode(AbstractCapability[AgentDepsT]):
             limits=self.limits,
             record_store=self.record_store,
             dynamic_catalog=self.dynamic_catalog,
+            scripts=self.scripts,
         )
 
     async def after_tool_execute(
